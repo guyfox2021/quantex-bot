@@ -1,0 +1,29 @@
+# Environment
+.env
+*.env
+
+# Database
+data/
+
+# Logs
+*.log
+bot.log
+bot_err.log
+
+# Google credentials
+service_account.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
