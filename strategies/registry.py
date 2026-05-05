@@ -1,7 +1,9 @@
 from strategies.accumulation import AccumulationStrategy
+from strategies.accumulation_v2 import AccumulationV2Strategy
 
 STRATEGIES = {
     "accumulation": AccumulationStrategy(),
+    "accumulation_v2": AccumulationV2Strategy(),
 }
 
 

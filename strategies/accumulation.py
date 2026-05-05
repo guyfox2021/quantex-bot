@@ -28,6 +28,7 @@ class AccumulationStrategy(BaseStrategy):
         avg_price = portfolio.get("avg_price", 0.0)
         last_high = portfolio.get("last_high", 0.0)
         btc_amount = portfolio.get("btc_amount", 0.0)
+        usdt_reserve = portfolio.get("usdt_reserve", 0.0)
 
         triggered_map = {
             (t["trigger_type"], t["level_percent"]): t["is_triggered"]
@@ -40,6 +41,8 @@ class AccumulationStrategy(BaseStrategy):
                 level = lvl["level"]
                 amount = lvl["amount_usdt"]
                 already_triggered = triggered_map.get(("BUY_DROP", float(level)), 0)
+                if amount > usdt_reserve:
+                    continue
                 if drawdown >= level and not already_triggered:
                     return StrategySignal(
                         signal_type="BUY",

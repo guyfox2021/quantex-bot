@@ -4,7 +4,7 @@ import logging
 from aiogram import Bot
 
 import config
-from services import binance_service, portfolio_service, settings_service, signal_service, sheets_service
+from services import binance_service, portfolio_service, settings_service, signal_service, sheets_service, buyback_service
 from strategies.registry import get_strategy
 from bot.messages import signal_message
 from bot.keyboards import signal_confirm_kb
@@ -39,14 +39,21 @@ async def run_watcher(bot: Bot):
             strategy = get_strategy(active_strategy_name)
 
             if updated:
-                signal_service.reset_buy_drop_triggers(strategy.name)
+                signal_service.reset_buy_entry_triggers(strategy.name)
 
             triggers = signal_service.get_triggers(strategy.name)
-            market_data = {"price": price}
+            market_data = {
+                "price": price,
+                "open_buybacks": buyback_service.get_open_cycles(strategy.name),
+            }
             signal = strategy.check(portfolio, market_data, settings, triggers)
 
             if signal.signal_type not in ("BUY", "SELL"):
                 continue
+
+            if signal.trigger_type and signal.level_percent is not None:
+                if signal_service.has_active_signal_for_trigger(strategy.name, signal.trigger_type, signal.level_percent):
+                    continue
 
             if signal.trigger_type:
                 already = any(
@@ -62,7 +69,7 @@ async def run_watcher(bot: Bot):
             if signal.trigger_type:
                 signal_service.mark_triggered(strategy.name, signal.trigger_type, signal.level_percent)
 
-            text = signal_message(signal, symbol, price)
+            text = signal_message(signal, symbol, price, portfolio)
             kb = signal_confirm_kb(sig_id, signal.signal_type)
 
             try:

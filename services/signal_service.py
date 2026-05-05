@@ -12,8 +12,9 @@ def save_signal(signal: StrategySignal, price: float, status: str = "NEW") -> in
         cursor = conn.execute(
             """INSERT INTO signals
                (signal_type, strategy_name, price, reason, recommended_action,
-                amount_usdt, amount_btc_percent, status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                amount_usdt, amount_btc_percent, trigger_type, level_percent,
+                buyback_cycle_id, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 signal.signal_type,
                 signal.strategy_name,
@@ -22,6 +23,9 @@ def save_signal(signal: StrategySignal, price: float, status: str = "NEW") -> in
                 signal.recommended_action,
                 signal.amount_usdt,
                 signal.amount_btc_percent,
+                signal.trigger_type,
+                signal.level_percent,
+                signal.buyback_cycle_id,
                 status,
                 _now(),
             ),
@@ -52,10 +56,12 @@ def has_active_signal_for_trigger(strategy_name: str, trigger_type: str, level_p
         row = conn.execute(
             """SELECT id FROM signals
                WHERE strategy_name = ?
+               AND trigger_type = ?
+               AND level_percent = ?
                AND status IN ('NEW', 'SENT')
-               AND amount_usdt > 0 OR amount_btc_percent > 0
+               AND (amount_usdt > 0 OR amount_btc_percent > 0)
                ORDER BY id DESC LIMIT 1""",
-            (strategy_name,),
+            (strategy_name, trigger_type, level_percent),
         ).fetchone()
         return row is not None
 
@@ -102,6 +108,16 @@ def reset_buy_drop_triggers(strategy_name: str) -> None:
         conn.execute(
             """UPDATE strategy_triggers SET is_triggered = 0, triggered_at = NULL
                WHERE strategy_name = ? AND trigger_type = 'BUY_DROP'""",
+            (strategy_name,),
+        )
+        conn.commit()
+
+
+def reset_buy_entry_triggers(strategy_name: str) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """UPDATE strategy_triggers SET is_triggered = 0, triggered_at = NULL
+               WHERE strategy_name = ? AND trigger_type IN ('BUY_DROP', 'BUY_DIP')""",
             (strategy_name,),
         )
         conn.commit()

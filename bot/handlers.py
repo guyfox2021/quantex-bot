@@ -1,5 +1,6 @@
 import logging
 from aiogram import Router, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
@@ -11,16 +12,16 @@ from bot.states import (
 from bot.keyboards import (
     main_menu, buy_confirm_kb, sell_confirm_kb, signal_confirm_kb,
     monthly_deposit_kb, trades_kb, signals_kb, refresh_back_kb,
-    strategy_kb, settings_kb, history_kb, back_kb, cancel_kb, start_strategy_kb,
+    strategy_kb, strategy_select_kb, settings_kb, history_kb, back_kb, cancel_kb, start_strategy_kb,
 )
 from bot.messages import (
     start_message, balance_message, pnl_message, strategy_message,
     signal_message, settings_message, transaction_line, signal_line,
 )
-from services import owner_service, binance_service, portfolio_service
+from services import owner_service, binance_service, portfolio_service, buyback_service
 from services import settings_service, signal_service, sheets_service
 from services.transaction_service import get_last_transactions
-from strategies.registry import get_strategy
+from strategies.registry import get_strategy, list_strategies
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -39,6 +40,15 @@ async def cancel_input(callback: CallbackQuery, state: FSMContext):
 
 def _price_error(symbol: str) -> str:
     return f"⚠️ Не вдалося отримати поточну ціну {symbol}. Спробуй пізніше."
+
+
+async def _safe_edit_text(message, text: str, **kwargs):
+    try:
+        await message.edit_text(text, **kwargs)
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            return
+        raise
 
 
 # ─── /start ───────────────────────────────────────────────────────────────────
@@ -253,22 +263,36 @@ async def _check_and_send_signal(message: Message, send_hold: bool = False, bot=
     strategy = get_strategy(settings.get("active_strategy", "accumulation"))
     triggers = signal_service.get_triggers(strategy.name)
 
-    market_data = {"price": price}
+    market_data = {
+        "price": price,
+        "open_buybacks": buyback_service.get_open_cycles(strategy.name),
+    }
     signal = strategy.check(portfolio, market_data, settings, triggers)
 
     if signal.signal_type in ("BUY", "SELL"):
+        if signal.trigger_type and signal.level_percent is not None:
+            has_active = signal_service.has_active_signal_for_trigger(
+                strategy.name,
+                signal.trigger_type,
+                signal.level_percent,
+            )
+            if has_active:
+                if send_hold and message:
+                    await message.answer("ℹ️ Такий сигнал уже очікує підтвердження.")
+                return signal
+
         sig_id = signal_service.save_signal(signal, price, status="SENT")
         if signal.trigger_type:
             signal_service.mark_triggered(strategy.name, signal.trigger_type, signal.level_percent)
 
-        text = signal_message(signal, symbol, price)
+        text = signal_message(signal, symbol, price, portfolio)
         kb = signal_confirm_kb(sig_id, signal.signal_type)
         if message:
             await message.answer(text, reply_markup=kb)
         return signal
 
     if send_hold and message:
-        await message.answer(signal_message(signal, symbol, price))
+        await message.answer(signal_message(signal, symbol, price, portfolio))
 
     return signal
 
@@ -311,7 +335,8 @@ async def balance_refresh(callback: CallbackQuery):
         return
     metrics = portfolio_service.calculate_portfolio_metrics(price)
     settings = settings_service.get_settings()
-    await callback.message.edit_text(
+    await _safe_edit_text(
+        callback.message,
         balance_message(metrics, settings),
         reply_markup=refresh_back_kb("balance:refresh", "balance:back"),
     )
@@ -360,7 +385,8 @@ async def pnl_refresh(callback: CallbackQuery):
         await callback.answer(_price_error(symbol))
         return
     metrics = portfolio_service.calculate_portfolio_metrics(price)
-    await callback.message.edit_text(
+    await _safe_edit_text(
+        callback.message,
         pnl_message(metrics, symbol),
         reply_markup=refresh_back_kb("pnl:refresh", "pnl:back"),
     )
@@ -627,17 +653,30 @@ async def trade_monthly(callback: CallbackQuery, state: FSMContext):
         return
     settings = settings_service.get_settings()
     monthly = settings.get("monthly_deposit", 500)
-    btc_buy = monthly * 0.70
-    reserve = monthly * 0.30
     symbol = settings.get("symbol", "BTCUSDT")
     from bot.messages import _base_coin
     coin = _base_coin(symbol)
+    strategy = get_strategy(settings.get("active_strategy", "accumulation"))
+
+    try:
+        price = await binance_service.get_price(symbol)
+        portfolio = portfolio_service.get_portfolio()
+        if hasattr(strategy, "calc_monthly_deposit_split"):
+            split = strategy.calc_monthly_deposit_split(monthly, portfolio.get("avg_price", 0), price)
+        else:
+            split = {"btc_buy": monthly * 0.70, "reserve": monthly * 0.30, "btc_pct": 70}
+    except Exception:
+        split = {"btc_buy": monthly * 0.70, "reserve": monthly * 0.30, "btc_pct": 70}
+
+    btc_buy = split["btc_buy"]
+    reserve = split["reserve"]
+    btc_pct = split.get("btc_pct", 70)
 
     await state.update_data(monthly=monthly, btc_buy=btc_buy, reserve=reserve)
     await callback.message.answer(
         f"💵 Щомісячне поповнення\n\n"
         f"Сума: {monthly:.2f} USDT\n\n"
-        f"Рекомендація:\n"
+        f"Рекомендація ({btc_pct:.0f}% {coin} / {100 - btc_pct:.0f}% резерв):\n"
         f"Купити {coin} на {btc_buy:.2f} USDT.\n"
         f"Додати в резерв {reserve:.2f} USDT.",
         reply_markup=monthly_deposit_kb(),
@@ -664,10 +703,12 @@ async def monthly_confirm(callback: CallbackQuery, state: FSMContext):
         portfolio_service.add_deposit(monthly)
         await callback.message.edit_text(f"✅ Додано {monthly:.2f} USDT до резерву.")
         await state.clear()
+        await callback.answer()
         return
 
     if action == "custom":
         await callback.message.answer("Введи ціну покупки у USDT:", reply_markup=cancel_kb())
+        await state.set_state(MonthlyDeposit.waiting_custom_price)
         await callback.answer()
         return
 
@@ -694,6 +735,39 @@ async def monthly_confirm(callback: CallbackQuery, state: FSMContext):
         )
         await state.clear()
     await callback.answer()
+
+
+@router.message(MonthlyDeposit.waiting_custom_price)
+async def monthly_custom_price(message: Message, state: FSMContext):
+    try:
+        price = float(message.text.replace(",", "."))
+        if price <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введи коректну ціну у USDT.")
+        return
+
+    data = await state.get_data()
+    monthly = data.get("monthly", 500)
+    btc_buy = data.get("btc_buy", monthly * 0.70)
+    reserve = data.get("reserve", monthly * 0.30)
+    symbol = settings_service.get_symbol()
+    from bot.messages import _base_coin
+    coin = _base_coin(symbol)
+
+    portfolio_service.apply_buy(btc_buy, price, "MONTHLY_DEPOSIT", "Щомісячне поповнення — купівля")
+    portfolio_service.add_reserve(reserve, "RESERVE_ADD", "Щомісячне поповнення — резерв")
+    portfolio_service.add_deposit(monthly)
+    settings = settings_service.get_settings()
+    metrics = portfolio_service.calculate_portfolio_metrics(price)
+    sheets_service.update_dashboard(metrics, settings)
+
+    await message.answer(
+        f"✅ Щомісячне поповнення виконано!\n"
+        f"{coin} куплено на {btc_buy:.2f} USDT за ціною {price:,.2f}\n"
+        f"Додано в резерв: {reserve:.2f} USDT"
+    )
+    await state.clear()
 
 
 # ─── Extra Deposit ────────────────────────────────────────────────────────────
@@ -764,6 +838,7 @@ async def extra_buy_confirm(callback: CallbackQuery, state: FSMContext):
 
     if action == "custom":
         await callback.message.answer("Введи ціну покупки у USDT:", reply_markup=cancel_kb())
+        await state.set_state(ExtraDeposit.waiting_custom_price)
         await callback.answer()
         return
 
@@ -790,6 +865,44 @@ async def extra_buy_confirm(callback: CallbackQuery, state: FSMContext):
         )
         await state.clear()
     await callback.answer()
+
+
+@router.message(ExtraDeposit.waiting_custom_price)
+async def extra_custom_price(message: Message, state: FSMContext):
+    try:
+        price = float(message.text.replace(",", "."))
+        if price <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введи коректну ціну у USDT.")
+        return
+
+    data = await state.get_data()
+    amount = data.get("amount", 0)
+    btc_buy = data.get("btc_buy", 0)
+    reserve = data.get("reserve", 0)
+    if amount <= 0:
+        await message.answer("❌ Не знайдено суму поповнення. Спробуй ще раз.")
+        await state.clear()
+        return
+
+    symbol = settings_service.get_symbol()
+    from bot.messages import _base_coin
+    coin = _base_coin(symbol)
+
+    portfolio_service.apply_buy(btc_buy, price, "EXTRA_DEPOSIT", "Додаткове поповнення — купівля")
+    portfolio_service.add_reserve(reserve, "RESERVE_ADD", "Додаткове поповнення — резерв")
+    portfolio_service.add_deposit(amount)
+    settings = settings_service.get_settings()
+    metrics = portfolio_service.calculate_portfolio_metrics(price)
+    sheets_service.update_dashboard(metrics, settings)
+
+    await message.answer(
+        f"✅ Додаткове поповнення виконано!\n"
+        f"{coin} куплено на {btc_buy:.2f} USDT за ціною {price:,.2f}\n"
+        f"Додано в резерв: {reserve:.2f} USDT"
+    )
+    await state.clear()
 
 
 # ─── Signal confirm from scheduler ───────────────────────────────────────────
@@ -856,13 +969,41 @@ async def _execute_signal_action(msg, state: FSMContext, signal_id: int, signal_
 
     if signal_type == "BUY":
         amount_usdt = sig_data.get("amount_usdt", 0)
-        portfolio_service.apply_buy(amount_usdt, price, "BUY", f"Покупка за сигналом #{signal_id}")
-        portfolio_service.add_deposit(amount_usdt)
+        try:
+            portfolio_service.apply_buy(
+                amount_usdt,
+                price,
+                "BUY",
+                f"Покупка за сигналом #{signal_id}",
+                spend_from_reserve=True,
+            )
+        except ValueError as e:
+            await msg.answer(f"❌ {e}")
+            await state.clear()
+            return
+        if sig_data.get("trigger_type") == "BUYBACK" and sig_data.get("buyback_cycle_id"):
+            btc_bought = amount_usdt / price if price > 0 else 0
+            buyback_service.mark_level_done(
+                sig_data["buyback_cycle_id"],
+                sig_data.get("level_percent", 0),
+                btc_bought,
+            )
         signal_service.update_signal_status(signal_id, "CONFIRMED")
         await msg.answer(f"✅ Куплено {coin} на {amount_usdt:.2f} USDT за ціною {price:,.2f}")
     elif signal_type == "SELL":
         pct = sig_data.get("amount_btc_percent", 0)
+        portfolio_before = portfolio_service.get_portfolio()
+        btc_sold = portfolio_before.get("btc_amount", 0.0) * pct / 100
+        usdt_received = btc_sold * price
         portfolio_service.apply_sell(pct, price, "SELL", f"Продаж за сигналом #{signal_id}")
+        if sig_data.get("strategy_name") == "accumulation_v2" and sig_data.get("trigger_type") == "SELL_PROFIT":
+            buyback_service.create_cycle(
+                sell_price=price,
+                btc_sold=btc_sold,
+                usdt_received=usdt_received,
+                sell_signal_id=signal_id,
+                strategy_name="accumulation_v2",
+            )
         signal_service.update_signal_status(signal_id, "CONFIRMED")
         await msg.answer(f"✅ Продано {pct:.2f}% {coin} за ціною {price:,.2f}")
 
@@ -1066,7 +1207,37 @@ async def settings_interval_value(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "settings:strategy")
 async def settings_strategy(callback: CallbackQuery):
-    await callback.answer("Зараз доступна лише стратегія «Моє накопичення позиції».", show_alert=True)
+    if not owner_service.is_owner(callback.from_user.id):
+        await callback.answer(ACCESS_DENIED)
+        return
+    settings = settings_service.get_settings()
+    await callback.message.answer(
+        "Обери активну стратегію:",
+        reply_markup=strategy_select_kb(list_strategies(), settings.get("active_strategy", "accumulation")),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("strategy:set:"))
+async def settings_strategy_set(callback: CallbackQuery):
+    if not owner_service.is_owner(callback.from_user.id):
+        await callback.answer(ACCESS_DENIED)
+        return
+
+    strategy_name = callback.data.split(":", 2)[2]
+    strategy = get_strategy(strategy_name)
+    old_strategy_name = settings_service.get_settings().get("active_strategy", "accumulation")
+    settings_service.update_active_strategy(strategy.name)
+    signal_service.ensure_default_triggers(strategy)
+
+    if old_strategy_name != strategy.name:
+        buyback_service.close_cycles_for_strategy(old_strategy_name)
+
+    await callback.message.edit_text(
+        f"✅ Активну стратегію змінено:\n{strategy.title}",
+        reply_markup=back_kb("settings:back"),
+    )
+    await callback.answer()
 
 
 # ─── 🪙 Зміна монети ──────────────────────────────────────────────────────────
@@ -1105,9 +1276,20 @@ async def settings_symbol_value(message: Message, state: FSMContext):
         return
 
     old_symbol = settings_service.get_symbol()
+    if symbol == old_symbol:
+        await message.answer(
+            f"✅ Символ уже встановлено: {symbol}\n\n"
+            "Портфель не змінювався.",
+            reply_markup=main_menu(),
+        )
+        await state.clear()
+        return
+
     settings_service.update_symbol(symbol)
     portfolio_service.reset_portfolio()
-    signal_service.reset_buy_drop_triggers("accumulation")
+    for strategy in list_strategies():
+        signal_service.reset_buy_entry_triggers(strategy.name)
+        buyback_service.close_cycles_for_strategy(strategy.name)
 
     await message.answer(
         f"✅ Монету змінено: {old_symbol} → {symbol}\n\n"

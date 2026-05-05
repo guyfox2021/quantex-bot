@@ -16,6 +16,7 @@ class StrategySignal:
     amount_btc_percent: float = 0.0
     trigger_type: Optional[str] = None
     level_percent: Optional[float] = None
+    buyback_cycle_id: Optional[int] = None
 
 
 class BaseStrategy(ABC):

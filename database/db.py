@@ -13,6 +13,14 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     cols = [row[1] for row in conn.execute("PRAGMA table_info(settings)").fetchall()]
     if "symbol" not in cols:
         conn.execute("ALTER TABLE settings ADD COLUMN symbol TEXT DEFAULT 'BTCUSDT'")
+
+    signal_cols = [row[1] for row in conn.execute("PRAGMA table_info(signals)").fetchall()]
+    if "trigger_type" not in signal_cols:
+        conn.execute("ALTER TABLE signals ADD COLUMN trigger_type TEXT")
+    if "level_percent" not in signal_cols:
+        conn.execute("ALTER TABLE signals ADD COLUMN level_percent REAL")
+    if "buyback_cycle_id" not in signal_cols:
+        conn.execute("ALTER TABLE signals ADD COLUMN buyback_cycle_id INTEGER")
     conn.commit()
 
 

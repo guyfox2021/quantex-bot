@@ -90,6 +90,15 @@ def strategy_kb() -> InlineKeyboardMarkup:
     ])
 
 
+def strategy_select_kb(strategies, active_strategy: str) -> InlineKeyboardMarkup:
+    rows = []
+    for strategy in strategies:
+        prefix = "✅ " if strategy.name == active_strategy else ""
+        rows.append([InlineKeyboardButton(text=f"{prefix}{strategy.title}", callback_data=f"strategy:set:{strategy.name}")])
+    rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="settings:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def settings_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎯 Ціль портфеля", callback_data="settings:target")],

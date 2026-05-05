@@ -106,7 +106,13 @@ def initialize_portfolio(start_capital: float, buy_price: float) -> dict:
     return get_portfolio()
 
 
-def apply_buy(usdt_amount: float, price: float, tx_type: str, note: str = "") -> dict:
+def apply_buy(
+    usdt_amount: float,
+    price: float,
+    tx_type: str,
+    note: str = "",
+    spend_from_reserve: bool = False,
+) -> dict:
     symbol = get_symbol()
     portfolio = get_portfolio()
     if not portfolio:
@@ -116,6 +122,11 @@ def apply_buy(usdt_amount: float, price: float, tx_type: str, note: str = "") ->
     btc_amount_new = portfolio.get("btc_amount", 0.0) + btc_bought
     total_btc_cost_new = portfolio.get("total_btc_cost", 0.0) + usdt_amount
     avg_price_new = total_btc_cost_new / btc_amount_new if btc_amount_new > 0 else 0.0
+    usdt_reserve_new = portfolio.get("usdt_reserve", 0.0)
+    if spend_from_reserve:
+        if usdt_amount > usdt_reserve_new:
+            raise ValueError("Недостатньо USDT у резерві для покупки.")
+        usdt_reserve_new -= usdt_amount
 
     new_last_high = max(portfolio.get("last_high", 0.0), price)
 
@@ -123,12 +134,14 @@ def apply_buy(usdt_amount: float, price: float, tx_type: str, note: str = "") ->
         conn.execute(
             """UPDATE portfolio SET
                btc_amount = ?,
+               usdt_reserve = ?,
                total_btc_cost = ?,
                avg_price = ?,
                last_high = ?,
                updated_at = ?
                WHERE id = ?""",
-            (btc_amount_new, total_btc_cost_new, avg_price_new, new_last_high, _now(), portfolio["id"]),
+            (btc_amount_new, usdt_reserve_new, total_btc_cost_new, avg_price_new,
+             new_last_high, _now(), portfolio["id"]),
         )
         conn.commit()
 
@@ -184,12 +197,11 @@ def add_reserve(usdt_amount: float, tx_type: str, note: str = "") -> dict:
         return {}
 
     usdt_reserve_new = portfolio.get("usdt_reserve", 0.0) + usdt_amount
-    total_deposited_new = portfolio.get("total_deposited", 0.0) + usdt_amount
 
     with get_connection() as conn:
         conn.execute(
-            "UPDATE portfolio SET usdt_reserve = ?, total_deposited = ?, updated_at = ? WHERE id = ?",
-            (usdt_reserve_new, total_deposited_new, _now(), portfolio["id"]),
+            "UPDATE portfolio SET usdt_reserve = ?, updated_at = ? WHERE id = ?",
+            (usdt_reserve_new, _now(), portfolio["id"]),
         )
         conn.commit()
 

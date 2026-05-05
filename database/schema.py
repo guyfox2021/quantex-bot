@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS signals (
     recommended_action TEXT,
     amount_usdt REAL DEFAULT 0,
     amount_btc_percent REAL DEFAULT 0,
+    trigger_type TEXT,
+    level_percent REAL,
+    buyback_cycle_id INTEGER,
     status TEXT DEFAULT 'NEW',
     created_at TEXT NOT NULL,
     updated_at TEXT
@@ -66,6 +69,22 @@ CREATE TABLE IF NOT EXISTS strategy_triggers (
     level_percent REAL NOT NULL,
     is_triggered INTEGER DEFAULT 0,
     triggered_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS buyback_cycles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    strategy_name TEXT NOT NULL DEFAULT 'accumulation_v2',
+    symbol TEXT DEFAULT 'BTCUSDT',
+    sell_signal_id INTEGER,
+    sell_price REAL NOT NULL,
+    btc_sold REAL NOT NULL,
+    usdt_received REAL NOT NULL,
+    remaining_btc REAL NOT NULL,
+    level_2_done INTEGER DEFAULT 0,
+    level_4_done INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'OPEN',
+    created_at TEXT NOT NULL,
+    updated_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS daily_snapshots (
