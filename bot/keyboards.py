@@ -10,6 +10,7 @@ def main_menu() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="⚙️ Налаштування")],
         ],
         resize_keyboard=True,
+        is_persistent=True,
     )
 
 
@@ -84,7 +85,7 @@ def refresh_back_kb(refresh_cb: str, back_cb: str) -> InlineKeyboardMarkup:
 
 def strategy_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🟣 Моє накопичення позиції", callback_data="strategy:info")],
+        [InlineKeyboardButton(text="🟣 Деталі стратегії", callback_data="strategy:info")],
         [InlineKeyboardButton(text="🔄 Перевірити сигнал", callback_data="strategy:check_signal")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="strategy:back")],
     ])
@@ -113,8 +114,8 @@ def settings_kb() -> InlineKeyboardMarkup:
 
 def history_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💰 Останні угоди", callback_data="history:trades")],
-        [InlineKeyboardButton(text="🔔 Останні сигнали", callback_data="history:signals")],
+        [InlineKeyboardButton(text="💸 Останні угоди", callback_data="history:trades")],
+        [InlineKeyboardButton(text="🚨 Останні сигнали", callback_data="history:signals")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="history:back")],
     ])
 

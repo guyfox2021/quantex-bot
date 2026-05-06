@@ -35,6 +35,7 @@ ACCESS_DENIED = "⛔ Доступ заборонено."
 async def cancel_input(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text("❌ Скасовано.")
+    await callback.message.answer("Головне меню:", reply_markup=main_menu())
     await callback.answer()
 
 
@@ -49,6 +50,10 @@ async def _safe_edit_text(message, text: str, **kwargs):
         if "message is not modified" in str(e):
             return
         raise
+
+
+async def _restore_main_menu(message: Message, text: str = "Головне меню:"):
+    await message.answer(text, reply_markup=main_menu())
 
 
 # ─── /start ───────────────────────────────────────────────────────────────────
@@ -94,6 +99,14 @@ async def cmd_start(message: Message, state: FSMContext):
             start_message(True, settings.get("active_strategy", "accumulation"), symbol),
             reply_markup=main_menu(),
         )
+
+
+@router.message(Command("menu"))
+async def cmd_menu(message: Message):
+    if not owner_service.is_owner(message.from_user.id):
+        await message.answer(ACCESS_DENIED)
+        return
+    await _restore_main_menu(message)
 
 
 @router.callback_query(F.data == "start:init")
@@ -538,7 +551,8 @@ async def manual_buy_custom_price(message: Message, state: FSMContext):
     coin = _base_coin(symbol)
     _execute_buy(amount, price, "MANUAL_BUY", "Ручна покупка за своєю ціною")
     await message.answer(
-        f"✅ Куплено {coin} на {amount:.2f} USDT\nЦіна: {price:,.2f} USDT"
+        f"✅ Куплено {coin} на {amount:.2f} USDT\nЦіна: {price:,.2f} USDT",
+        reply_markup=main_menu(),
     )
     await state.clear()
 
@@ -640,7 +654,10 @@ async def manual_sell_custom_price(message: Message, state: FSMContext):
     settings = settings_service.get_settings()
     metrics = portfolio_service.calculate_portfolio_metrics(price)
     sheets_service.update_dashboard(metrics, settings)
-    await message.answer(f"✅ Продано {pct:.2f}% {coin}\nЦіна: {price:,.2f} USDT")
+    await message.answer(
+        f"✅ Продано {pct:.2f}% {coin}\nЦіна: {price:,.2f} USDT",
+        reply_markup=main_menu(),
+    )
     await state.clear()
 
 
@@ -1153,7 +1170,7 @@ async def settings_target_value(message: Message, state: FSMContext):
         await message.answer("❌ Введи коректне число.")
         return
     settings_service.update_target_value(value)
-    await message.answer(f"✅ Ціль оновлена: {value:,.2f} USDT")
+    await message.answer(f"✅ Ціль оновлена: {value:,.2f} USDT", reply_markup=main_menu())
     await state.clear()
 
 
@@ -1177,7 +1194,7 @@ async def settings_monthly_value(message: Message, state: FSMContext):
         await message.answer("❌ Введи коректне число.")
         return
     settings_service.update_monthly_deposit(value)
-    await message.answer(f"✅ Щомісячне поповнення оновлено: {value:,.2f} USDT")
+    await message.answer(f"✅ Щомісячне поповнення оновлено: {value:,.2f} USDT", reply_markup=main_menu())
     await state.clear()
 
 
@@ -1201,7 +1218,7 @@ async def settings_interval_value(message: Message, state: FSMContext):
         await message.answer("❌ Введи ціле число, мінімум 1.")
         return
     settings_service.update_check_interval(minutes)
-    await message.answer(f"✅ Частота перевірки оновлена: {minutes} хв")
+    await message.answer(f"✅ Частота перевірки оновлена: {minutes} хв", reply_markup=main_menu())
     await state.clear()
 
 
