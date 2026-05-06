@@ -21,6 +21,14 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE signals ADD COLUMN level_percent REAL")
     if "buyback_cycle_id" not in signal_cols:
         conn.execute("ALTER TABLE signals ADD COLUMN buyback_cycle_id INTEGER")
+
+    tx_cols = [row[1] for row in conn.execute("PRAGMA table_info(transactions)").fetchall()]
+    if "status" not in tx_cols:
+        conn.execute("ALTER TABLE transactions ADD COLUMN status TEXT DEFAULT 'ACTIVE'")
+    if "voided_at" not in tx_cols:
+        conn.execute("ALTER TABLE transactions ADD COLUMN voided_at TEXT")
+    if "void_reason" not in tx_cols:
+        conn.execute("ALTER TABLE transactions ADD COLUMN void_reason TEXT")
     conn.commit()
 
 

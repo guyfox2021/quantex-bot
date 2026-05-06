@@ -30,6 +30,9 @@ CREATE TABLE IF NOT EXISTS transactions (
     btc_amount REAL DEFAULT 0,
     fee REAL DEFAULT 0,
     note TEXT,
+    status TEXT DEFAULT 'ACTIVE',
+    voided_at TEXT,
+    void_reason TEXT,
     created_at TEXT NOT NULL
 );
 

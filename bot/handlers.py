@@ -13,6 +13,7 @@ from bot.keyboards import (
     main_menu, buy_confirm_kb, sell_confirm_kb, signal_confirm_kb,
     monthly_deposit_kb, trades_kb, signals_kb, refresh_back_kb,
     strategy_kb, strategy_select_kb, settings_kb, history_kb, back_kb, cancel_kb, start_strategy_kb,
+    confirm_undo_trade_kb,
 )
 from bot.messages import (
     start_message, balance_message, pnl_message, strategy_message,
@@ -20,7 +21,7 @@ from bot.messages import (
 )
 from services import owner_service, binance_service, portfolio_service, buyback_service
 from services import settings_service, signal_service, sheets_service
-from services.transaction_service import get_last_transactions
+from services.transaction_service import get_last_transactions, get_last_active_transaction, void_transaction
 from strategies.registry import get_strategy, list_strategies
 
 logger = logging.getLogger(__name__)
@@ -443,7 +444,15 @@ async def strategy_back(callback: CallbackQuery):
 
 @router.callback_query(F.data == "strategy:info")
 async def strategy_info(callback: CallbackQuery):
-    await callback.answer()
+    if not owner_service.is_owner(callback.from_user.id):
+        await callback.answer(ACCESS_DENIED)
+        return
+    settings = settings_service.get_settings()
+    await callback.message.answer(
+        strategy_message(settings.get("active_strategy", "accumulation")),
+        reply_markup=back_kb("strategy:back"),
+    )
+    await callback.answer("Відкрив деталі стратегії")
 
 
 # ─── 💰 Угоди ─────────────────────────────────────────────────────────────────
@@ -463,6 +472,79 @@ async def btn_trades(message: Message):
 async def trade_back(callback: CallbackQuery):
     await callback.message.delete()
     await callback.answer()
+
+
+@router.callback_query(F.data == "trade:undo_last")
+async def trade_undo_last(callback: CallbackQuery):
+    if not owner_service.is_owner(callback.from_user.id):
+        await callback.answer(ACCESS_DENIED)
+        return
+
+    tx = get_last_active_transaction()
+    if not tx:
+        await callback.answer("Немає транзакцій для скасування.", show_alert=True)
+        return
+
+    if not _is_reversible_transaction(tx):
+        await callback.answer(
+            "Останню системну або складену операцію поки не можна скасувати автоматично.",
+            show_alert=True,
+        )
+        return
+
+    text = (
+        "↩️ Скасування останньої транзакції\n\n"
+        "Буде виконано:\n"
+        "• позначення транзакції як скасованої\n"
+        "• повний перерахунок портфеля з активної історії\n\n"
+        "Транзакція:\n\n"
+        f"{transaction_line(tx)}"
+    )
+    await callback.message.answer(text, reply_markup=confirm_undo_trade_kb(tx["id"]))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "trade:undo_cancel")
+async def trade_undo_cancel(callback: CallbackQuery):
+    await callback.message.delete()
+    await callback.answer("Скасування відмінено")
+
+
+@router.callback_query(F.data.startswith("trade:undo_confirm:"))
+async def trade_undo_confirm(callback: CallbackQuery):
+    if not owner_service.is_owner(callback.from_user.id):
+        await callback.answer(ACCESS_DENIED)
+        return
+
+    tx_id = int(callback.data.rsplit(":", 1)[1])
+    tx = get_last_active_transaction()
+    if not tx or tx.get("id") != tx_id:
+        await callback.answer("Скасувати можна лише поточну останню транзакцію.", show_alert=True)
+        return
+
+    if not _is_reversible_transaction(tx):
+        await callback.answer("Цю транзакцію не можна скасувати автоматично.", show_alert=True)
+        return
+
+    void_transaction(tx_id, "Voided from Telegram UI")
+    portfolio_service.rebuild_portfolio_from_transactions()
+
+    symbol = settings_service.get_symbol()
+    try:
+        price = await binance_service.get_price(symbol)
+        metrics = portfolio_service.calculate_portfolio_metrics(price)
+        settings = settings_service.get_settings()
+        sheets_service.update_dashboard(metrics, settings)
+    except Exception:
+        pass
+
+    await callback.message.edit_text("✅ Останню транзакцію скасовано. Портфель перераховано.")
+    await callback.message.answer("Головне меню:", reply_markup=main_menu())
+    await callback.answer()
+
+
+def _is_reversible_transaction(tx: dict) -> bool:
+    return tx.get("type") in ("MANUAL_BUY", "MANUAL_SELL")
 
 
 # ─── Manual Buy ───────────────────────────────────────────────────────────────

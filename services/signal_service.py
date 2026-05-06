@@ -121,3 +121,13 @@ def reset_buy_entry_triggers(strategy_name: str) -> None:
             (strategy_name,),
         )
         conn.commit()
+
+
+def reset_sell_profit_triggers(strategy_name: str) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """UPDATE strategy_triggers SET is_triggered = 0, triggered_at = NULL
+               WHERE strategy_name = ? AND trigger_type = 'SELL_PROFIT'""",
+            (strategy_name,),
+        )
+        conn.commit()

@@ -60,9 +60,19 @@ def trades_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Купити вручну", callback_data="trade:manual_buy")],
         [InlineKeyboardButton(text="➖ Продати вручну", callback_data="trade:manual_sell")],
+        [InlineKeyboardButton(text="↩️ Скасувати останню", callback_data="trade:undo_last")],
         [InlineKeyboardButton(text="💵 Щомісячне поповнення", callback_data="trade:monthly")],
         [InlineKeyboardButton(text="💵 Додаткове поповнення", callback_data="trade:extra")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="trade:back")],
+    ])
+
+
+def confirm_undo_trade_kb(transaction_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Скасувати", callback_data=f"trade:undo_confirm:{transaction_id}"),
+            InlineKeyboardButton(text="❌ Назад", callback_data="trade:undo_cancel"),
+        ],
     ])
 
 

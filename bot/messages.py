@@ -76,13 +76,17 @@ def balance_message(metrics: dict, settings: dict) -> str:
 
     return (
         f"📊 Баланс ({symbol})\n\n"
+        f"<b>Актив</b>\n"
         f"{coin}: {fmt_btc(metrics.get('btc_amount', 0))}\n"
         f"🏦 USDT резерв: {fmt_usdt(metrics.get('usdt_reserve', 0))}\n\n"
+        f"<b>Ринок</b>\n"
         f"📍 Середня ціна: {fmt_price(metrics.get('avg_price', 0))} USDT\n"
-        f"💹 Поточна ціна: {fmt_price(metrics.get('current_price', 0))} USDT\n\n"
+        f"📈 Поточна ціна: {fmt_price(metrics.get('current_price', 0))} USDT\n\n"
+        f"<b>Оцінка</b>\n"
         f"🧾 Вартість монети: {fmt_usdt(metrics.get('btc_value', 0))} USDT\n"
-        f"💼 Вартість портфеля: {fmt_usdt(portfolio_value)} USDT\n\n"
-        f"🎯 Ціль: {fmt_usdt(target)} USDT\n"
+        f"💰 Вартість портфеля: {fmt_usdt(portfolio_value)} USDT\n\n"
+        f"<b>Ціль</b>\n"
+        f"🎯 Ціль портфеля: {fmt_usdt(target)} USDT\n"
         f"🚀 Прогрес: {progress:.2f}%"
     )
 
@@ -91,11 +95,14 @@ def pnl_message(metrics: dict, symbol: str = "BTCUSDT") -> str:
     coin = _coin_badge(symbol)
     return (
         f"📈 PnL ({symbol})\n\n"
+        f"<b>База</b>\n"
         f"🪙 Актив: {coin}\n"
         f"💸 Внесено всього: {fmt_usdt(metrics.get('total_deposited', 0))} USDT\n"
         f"💼 Вартість портфеля: {fmt_usdt(metrics.get('portfolio_value', 0))} USDT\n\n"
+        f"<b>Підсумок</b>\n"
         f"📊 Загальний PnL: {fmt_usdt(metrics.get('total_pnl', 0))} USDT\n"
         f"📈 PnL: {fmt_percent(metrics.get('total_pnl_percent', 0))}\n\n"
+        f"<b>Деталі</b>\n"
         f"✅ Реалізований PnL: {fmt_usdt(metrics.get('realized_pnl', 0))} USDT\n"
         f"⏳ Нереалізований PnL: {fmt_usdt(metrics.get('unrealized_pnl', 0))} USDT"
     )
@@ -171,9 +178,9 @@ def transaction_line(tx: dict) -> str:
     btc = fmt_btc(tx.get("btc_amount", 0))
     price = fmt_price(tx.get("price", 0))
     return (
-        f"🕒 {created}\n"
+        f"<b>{created}</b>\n"
         f"{_tx_badge(tx_type)} | {usdt} USDT | {btc} {coin}\n"
-        f"💹 Ціна: {price}"
+        f"Ціна: {price}"
     )
 
 

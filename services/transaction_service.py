@@ -26,9 +26,42 @@ def add_transaction(
         conn.commit()
 
 
-def get_last_transactions(limit: int = 10) -> list[dict]:
+def get_last_transactions(limit: int = 10, include_voided: bool = False) -> list[dict]:
+    with get_connection() as conn:
+        if include_voided:
+            rows = conn.execute(
+                "SELECT * FROM transactions ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM transactions WHERE status = 'ACTIVE' ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_active_transactions() -> list[dict]:
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT * FROM transactions ORDER BY id DESC LIMIT ?", (limit,)
+            "SELECT * FROM transactions WHERE status = 'ACTIVE' ORDER BY id ASC"
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def get_last_active_transaction() -> dict:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM transactions WHERE status = 'ACTIVE' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return dict(row) if row else {}
+
+
+def void_transaction(transaction_id: int, reason: str) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """UPDATE transactions
+               SET status = 'VOIDED', voided_at = ?, void_reason = ?
+               WHERE id = ?""",
+            (_now(), reason, transaction_id),
+        )
+        conn.commit()

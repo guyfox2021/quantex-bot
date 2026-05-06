@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from database.db import get_connection
-from services.transaction_service import add_transaction
+from services.transaction_service import add_transaction, get_active_transactions
 from services.settings_service import get_symbol
 
 
@@ -234,6 +234,108 @@ def reset_portfolio() -> None:
             (_now(),),
         )
         conn.commit()
+
+
+def rebuild_portfolio_from_transactions() -> dict:
+    portfolio_before = get_portfolio()
+    preserved_last_high = portfolio_before.get("last_high", 0.0)
+    transactions = get_active_transactions()
+
+    state = {
+        "btc_amount": 0.0,
+        "usdt_reserve": 0.0,
+        "total_btc_cost": 0.0,
+        "avg_price": 0.0,
+        "last_high": 0.0,
+        "total_deposited": 0.0,
+        "realized_pnl": 0.0,
+        "is_initialized": 0,
+    }
+
+    for tx in transactions:
+        _apply_transaction_to_state(state, tx)
+
+    state["avg_price"] = (
+        state["total_btc_cost"] / state["btc_amount"] if state["btc_amount"] > 0 else 0.0
+    )
+    state["last_high"] = max(state["last_high"], preserved_last_high)
+    state["is_initialized"] = 1 if (state["btc_amount"] > 0 or state["usdt_reserve"] > 0 or state["total_deposited"] > 0) else 0
+
+    with get_connection() as conn:
+        conn.execute(
+            """UPDATE portfolio SET
+               btc_amount = ?,
+               usdt_reserve = ?,
+               total_btc_cost = ?,
+               avg_price = ?,
+               last_high = ?,
+               total_deposited = ?,
+               realized_pnl = ?,
+               is_initialized = ?,
+               updated_at = ?
+               WHERE id = (SELECT id FROM portfolio LIMIT 1)""",
+            (
+                state["btc_amount"],
+                state["usdt_reserve"],
+                state["total_btc_cost"],
+                state["avg_price"],
+                state["last_high"],
+                state["total_deposited"],
+                state["realized_pnl"],
+                state["is_initialized"],
+                _now(),
+            ),
+        )
+        conn.commit()
+
+    return get_portfolio()
+
+
+def _apply_transaction_to_state(state: dict, tx: dict) -> None:
+    tx_type = tx.get("type", "")
+    usdt_amount = float(tx.get("usdt_amount", 0.0) or 0.0)
+    btc_amount = float(tx.get("btc_amount", 0.0) or 0.0)
+    price = float(tx.get("price", 0.0) or 0.0)
+    note = tx.get("note", "") or ""
+
+    if tx_type == "INITIAL_DEPOSIT":
+        state["total_deposited"] += usdt_amount
+        return
+
+    if tx_type == "RESERVE_ADD":
+        state["usdt_reserve"] += usdt_amount
+        return
+
+    if tx_type in ("BUY", "MANUAL_BUY", "MONTHLY_DEPOSIT", "EXTRA_DEPOSIT"):
+        if btc_amount > 0 and price > 0:
+            if tx_type == "BUY" and "Покупка за сигналом" in note:
+                state["usdt_reserve"] = max(state["usdt_reserve"] - usdt_amount, 0.0)
+            elif tx_type in ("MANUAL_BUY", "MONTHLY_DEPOSIT", "EXTRA_DEPOSIT"):
+                state["total_deposited"] += usdt_amount
+
+            state["btc_amount"] += btc_amount
+            state["total_btc_cost"] += usdt_amount
+            state["avg_price"] = state["total_btc_cost"] / state["btc_amount"] if state["btc_amount"] > 0 else 0.0
+            state["last_high"] = max(state["last_high"], price)
+            return
+
+        if tx_type == "MONTHLY_DEPOSIT" and btc_amount == 0:
+            state["usdt_reserve"] += usdt_amount
+            state["total_deposited"] += usdt_amount
+            return
+
+    if tx_type in ("SELL", "MANUAL_SELL"):
+        if btc_amount <= 0 or state["btc_amount"] <= 0:
+            return
+        btc_sold = min(btc_amount, state["btc_amount"])
+        avg_cost_per_btc = state["total_btc_cost"] / state["btc_amount"] if state["btc_amount"] > 0 else 0.0
+        cost_removed = avg_cost_per_btc * btc_sold
+        state["btc_amount"] -= btc_sold
+        state["usdt_reserve"] += usdt_amount
+        state["total_btc_cost"] = max(state["total_btc_cost"] - cost_removed, 0.0)
+        state["realized_pnl"] += usdt_amount - cost_removed
+        state["avg_price"] = state["total_btc_cost"] / state["btc_amount"] if state["btc_amount"] > 0 else 0.0
+        return
 
 
 def _base_coin(symbol: str) -> str:

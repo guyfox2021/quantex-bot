@@ -77,6 +77,13 @@ def mark_level_done(cycle_id: int, level_percent: float, btc_bought: float) -> N
         )
         conn.commit()
 
+    if status == "CLOSED":
+        # A completed buyback closes the sell-buyback cycle, so profit-take levels
+        # should become available again for the next upward move.
+        from services.signal_service import reset_sell_profit_triggers
+
+        reset_sell_profit_triggers(cycle.get("strategy_name", "accumulation_v2"))
+
 
 def close_cycles_for_strategy(strategy_name: str) -> None:
     with get_connection() as conn:
