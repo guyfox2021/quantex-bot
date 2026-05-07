@@ -112,21 +112,31 @@ def apply_buy(
     tx_type: str,
     note: str = "",
     spend_from_reserve: bool = False,
+    fee: float = 0.0,
+    fee_asset: str = "USDT",
 ) -> dict:
     symbol = get_symbol()
+    coin = _base_coin(symbol)
+    fee_asset = (fee_asset or "USDT").upper()
     portfolio = get_portfolio()
     if not portfolio:
         return {}
 
-    btc_bought = usdt_amount / price if price > 0 else 0.0
+    gross_btc_bought = usdt_amount / price if price > 0 else 0.0
+    btc_fee = fee if fee_asset == coin else 0.0
+    usdt_fee = fee if fee_asset == "USDT" else 0.0
+    if btc_fee > gross_btc_bought:
+        raise ValueError(f"Комісія не може бути більшою за куплену кількість {coin}.")
+    btc_bought = gross_btc_bought - btc_fee
     btc_amount_new = portfolio.get("btc_amount", 0.0) + btc_bought
-    total_btc_cost_new = portfolio.get("total_btc_cost", 0.0) + usdt_amount
+    total_btc_cost_new = portfolio.get("total_btc_cost", 0.0) + usdt_amount + usdt_fee
     avg_price_new = total_btc_cost_new / btc_amount_new if btc_amount_new > 0 else 0.0
     usdt_reserve_new = portfolio.get("usdt_reserve", 0.0)
     if spend_from_reserve:
-        if usdt_amount > usdt_reserve_new:
+        reserve_spend = usdt_amount + usdt_fee
+        if reserve_spend > usdt_reserve_new:
             raise ValueError("Недостатньо USDT у резерві для покупки.")
-        usdt_reserve_new -= usdt_amount
+        usdt_reserve_new -= reserve_spend
 
     new_last_high = max(portfolio.get("last_high", 0.0), price)
 
@@ -145,12 +155,21 @@ def apply_buy(
         )
         conn.commit()
 
-    add_transaction(tx_type, price, usdt_amount, btc_bought, note=note, symbol=symbol)
+    add_transaction(tx_type, price, usdt_amount, btc_bought, fee=fee, fee_asset=fee_asset, note=note, symbol=symbol)
     return get_portfolio()
 
 
-def apply_sell(sell_percent: float, price: float, tx_type: str, note: str = "") -> dict:
+def apply_sell(
+    sell_percent: float,
+    price: float,
+    tx_type: str,
+    note: str = "",
+    fee: float = 0.0,
+    fee_asset: str = "USDT",
+) -> dict:
     symbol = get_symbol()
+    coin = _base_coin(symbol)
+    fee_asset = (fee_asset or "USDT").upper()
     portfolio = get_portfolio()
     if not portfolio:
         return {}
@@ -162,11 +181,18 @@ def apply_sell(sell_percent: float, price: float, tx_type: str, note: str = "") 
 
     btc_sold = btc_amount * sell_percent / 100
     usdt_received = btc_sold * price
-    cost_removed = total_btc_cost * sell_percent / 100
-    realized_pnl_add = usdt_received - cost_removed
+    usdt_fee = fee if fee_asset == "USDT" else 0.0
+    btc_fee = fee if fee_asset == coin else 0.0
+    if usdt_fee > usdt_received:
+        raise ValueError("Комісія не може бути більшою за суму продажу.")
+    if btc_sold + btc_fee > btc_amount:
+        raise ValueError(f"Комісія не може бути більшою за доступний залишок {coin}.")
+    total_btc_removed = btc_sold + btc_fee
+    cost_removed = total_btc_cost * (total_btc_removed / btc_amount) if btc_amount > 0 else 0.0
+    realized_pnl_add = usdt_received - usdt_fee - cost_removed
 
-    btc_amount_new = btc_amount - btc_sold
-    usdt_reserve_new = usdt_reserve + usdt_received
+    btc_amount_new = btc_amount - total_btc_removed
+    usdt_reserve_new = usdt_reserve + usdt_received - usdt_fee
     total_btc_cost_new = total_btc_cost - cost_removed
     realized_pnl_new = realized_pnl + realized_pnl_add
     avg_price_new = total_btc_cost_new / btc_amount_new if btc_amount_new > 0 else 0.0
@@ -186,7 +212,7 @@ def apply_sell(sell_percent: float, price: float, tx_type: str, note: str = "") 
         )
         conn.commit()
 
-    add_transaction(tx_type, price, usdt_received, btc_sold, note=note, symbol=symbol)
+    add_transaction(tx_type, price, usdt_received, total_btc_removed, fee=fee, fee_asset=fee_asset, note=note, symbol=symbol)
     return get_portfolio()
 
 
@@ -236,9 +262,9 @@ def reset_portfolio() -> None:
         conn.commit()
 
 
-def rebuild_portfolio_from_transactions() -> dict:
+def rebuild_portfolio_from_transactions(preserve_last_high: bool = False) -> dict:
     portfolio_before = get_portfolio()
-    preserved_last_high = portfolio_before.get("last_high", 0.0)
+    preserved_last_high = portfolio_before.get("last_high", 0.0) if preserve_last_high else 0.0
     transactions = get_active_transactions()
 
     state = {
@@ -296,6 +322,11 @@ def _apply_transaction_to_state(state: dict, tx: dict) -> None:
     usdt_amount = float(tx.get("usdt_amount", 0.0) or 0.0)
     btc_amount = float(tx.get("btc_amount", 0.0) or 0.0)
     price = float(tx.get("price", 0.0) or 0.0)
+    fee = float(tx.get("fee", 0.0) or 0.0)
+    fee_asset = (tx.get("fee_asset", "USDT") or "USDT").upper()
+    symbol = tx.get("symbol", get_symbol()) or get_symbol()
+    coin = _base_coin(symbol)
+    usdt_fee = fee if fee_asset == "USDT" else 0.0
     note = tx.get("note", "") or ""
 
     if tx_type == "INITIAL_DEPOSIT":
@@ -304,17 +335,19 @@ def _apply_transaction_to_state(state: dict, tx: dict) -> None:
 
     if tx_type == "RESERVE_ADD":
         state["usdt_reserve"] += usdt_amount
+        if "Щомісячне поповнення" in note or "Додаткове поповнення" in note:
+            state["total_deposited"] += usdt_amount
         return
 
     if tx_type in ("BUY", "MANUAL_BUY", "MONTHLY_DEPOSIT", "EXTRA_DEPOSIT"):
         if btc_amount > 0 and price > 0:
             if tx_type == "BUY" and "Покупка за сигналом" in note:
-                state["usdt_reserve"] = max(state["usdt_reserve"] - usdt_amount, 0.0)
+                state["usdt_reserve"] = max(state["usdt_reserve"] - usdt_amount - usdt_fee, 0.0)
             elif tx_type in ("MANUAL_BUY", "MONTHLY_DEPOSIT", "EXTRA_DEPOSIT"):
-                state["total_deposited"] += usdt_amount
+                state["total_deposited"] += usdt_amount + usdt_fee
 
             state["btc_amount"] += btc_amount
-            state["total_btc_cost"] += usdt_amount
+            state["total_btc_cost"] += usdt_amount + usdt_fee
             state["avg_price"] = state["total_btc_cost"] / state["btc_amount"] if state["btc_amount"] > 0 else 0.0
             state["last_high"] = max(state["last_high"], price)
             return
@@ -331,9 +364,9 @@ def _apply_transaction_to_state(state: dict, tx: dict) -> None:
         avg_cost_per_btc = state["total_btc_cost"] / state["btc_amount"] if state["btc_amount"] > 0 else 0.0
         cost_removed = avg_cost_per_btc * btc_sold
         state["btc_amount"] -= btc_sold
-        state["usdt_reserve"] += usdt_amount
+        state["usdt_reserve"] += usdt_amount - usdt_fee
         state["total_btc_cost"] = max(state["total_btc_cost"] - cost_removed, 0.0)
-        state["realized_pnl"] += usdt_amount - cost_removed
+        state["realized_pnl"] += usdt_amount - usdt_fee - cost_removed
         state["avg_price"] = state["total_btc_cost"] / state["btc_amount"] if state["btc_amount"] > 0 else 0.0
         return
 

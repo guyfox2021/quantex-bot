@@ -26,10 +26,15 @@ class ExtraDeposit(StatesGroup):
     waiting_custom_price = State()
 
 
+class EditTransaction(StatesGroup):
+    waiting_values = State()
+
+
 class SettingsStates(StatesGroup):
     waiting_target_value = State()
     waiting_monthly_deposit = State()
     waiting_check_interval = State()
+    waiting_commission_percent = State()
     waiting_symbol = State()
 
 

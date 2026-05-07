@@ -26,8 +26,8 @@ def create_default_settings_if_needed() -> None:
             conn.execute(
                 """INSERT INTO settings
                    (target_value, monthly_deposit, check_interval_minutes,
-                    signals_enabled, active_strategy, symbol, created_at, updated_at)
-                   VALUES (5000, 500, 5, 1, 'accumulation', 'BTCUSDT', ?, ?)""",
+                    signals_enabled, active_strategy, symbol, commission_percent, created_at, updated_at)
+                   VALUES (5000, 500, 5, 1, 'accumulation', 'BTCUSDT', 0.1, ?, ?)""",
                 (now, now),
             )
             conn.commit()
@@ -86,5 +86,14 @@ def update_symbol(symbol: str) -> None:
         conn.execute(
             "UPDATE settings SET symbol = ?, updated_at = ? WHERE id = (SELECT id FROM settings LIMIT 1)",
             (symbol.upper(), _now()),
+        )
+        conn.commit()
+
+
+def update_commission_percent(value: float) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE settings SET commission_percent = ?, updated_at = ? WHERE id = (SELECT id FROM settings LIMIT 1)",
+            (value, _now()),
         )
         conn.commit()

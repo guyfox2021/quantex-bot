@@ -7,13 +7,13 @@ from aiogram.fsm.context import FSMContext
 
 from bot.states import (
     InitPortfolio, ManualBuy, ManualSell,
-    MonthlyDeposit, ExtraDeposit, SettingsStates, SignalConfirm,
+    MonthlyDeposit, ExtraDeposit, EditTransaction, SettingsStates, SignalConfirm,
 )
 from bot.keyboards import (
     main_menu, buy_confirm_kb, sell_confirm_kb, signal_confirm_kb,
     monthly_deposit_kb, trades_kb, signals_kb, refresh_back_kb,
     strategy_kb, strategy_select_kb, settings_kb, history_kb, back_kb, cancel_kb, start_strategy_kb,
-    confirm_undo_trade_kb,
+    confirm_delete_trade_kb, transaction_delete_select_kb, transaction_edit_select_kb,
 )
 from bot.messages import (
     start_message, balance_message, pnl_message, strategy_message,
@@ -21,7 +21,11 @@ from bot.messages import (
 )
 from services import owner_service, binance_service, portfolio_service, buyback_service
 from services import settings_service, signal_service, sheets_service
-from services.transaction_service import get_last_transactions, get_last_active_transaction, void_transaction
+from services.transaction_service import (
+    get_last_transactions, void_transaction,
+    get_active_transactions_desc, get_transaction, update_transaction_values,
+    apply_commission_to_zero_fee_transactions,
+)
 from strategies.registry import get_strategy, list_strategies
 
 logger = logging.getLogger(__name__)
@@ -42,6 +46,15 @@ async def cancel_input(callback: CallbackQuery, state: FSMContext):
 
 def _price_error(symbol: str) -> str:
     return f"⚠️ Не вдалося отримати поточну ціну {symbol}. Спробуй пізніше."
+
+
+def _auto_fee(fee_base_amount: float, default_asset: str) -> tuple[float, str]:
+    commission_percent = settings_service.get_settings().get("commission_percent", 0.1)
+    return fee_base_amount * commission_percent / 100, default_asset.upper()
+
+
+def _format_fee(fee: float, fee_asset: str) -> str:
+    return f"{fee:g} {fee_asset}"
 
 
 async def _safe_edit_text(message, text: str, **kwargs):
@@ -284,6 +297,11 @@ async def _check_and_send_signal(message: Message, send_hold: bool = False, bot=
     signal = strategy.check(portfolio, market_data, settings, triggers)
 
     if signal.signal_type in ("BUY", "SELL"):
+        if signal.signal_type == "BUY" and not signal_service.can_send_buy_signal(cooldown_hours=6):
+            if send_hold and message:
+                await message.answer("ℹ️ BUY-сигнал пропущено: активний cooldown 6 годин після попереднього BUY.")
+            return signal
+
         if signal.trigger_type and signal.level_percent is not None:
             has_active = signal_service.has_active_signal_for_trigger(
                 strategy.name,
@@ -474,60 +492,167 @@ async def trade_back(callback: CallbackQuery):
     await callback.answer()
 
 
-@router.callback_query(F.data == "trade:undo_last")
-async def trade_undo_last(callback: CallbackQuery):
+@router.callback_query(F.data == "trade:delete_select")
+async def trade_delete_select(callback: CallbackQuery):
     if not owner_service.is_owner(callback.from_user.id):
         await callback.answer(ACCESS_DENIED)
         return
 
-    tx = get_last_active_transaction()
-    if not tx:
-        await callback.answer("Немає транзакцій для скасування.", show_alert=True)
+    transactions = get_active_transactions_desc(20)
+    if not transactions:
+        await callback.answer("Немає активних транзакцій для видалення.", show_alert=True)
         return
 
-    if not _is_reversible_transaction(tx):
-        await callback.answer(
-            "Останню системну або складену операцію поки не можна скасувати автоматично.",
-            show_alert=True,
-        )
-        return
-
-    text = (
-        "↩️ Скасування останньої транзакції\n\n"
-        "Буде виконано:\n"
-        "• позначення транзакції як скасованої\n"
-        "• повний перерахунок портфеля з активної історії\n\n"
-        "Транзакція:\n\n"
-        f"{transaction_line(tx)}"
-    )
-    await callback.message.answer(text, reply_markup=confirm_undo_trade_kb(tx["id"]))
+    text = "🗑 Вибери помилкову угоду для видалення з розрахунку:"
+    await callback.message.answer(text, reply_markup=transaction_delete_select_kb(transactions))
     await callback.answer()
 
 
-@router.callback_query(F.data == "trade:undo_cancel")
-async def trade_undo_cancel(callback: CallbackQuery):
+@router.callback_query(F.data == "trade:delete_cancel")
+async def trade_delete_cancel(callback: CallbackQuery):
     await callback.message.delete()
-    await callback.answer("Скасування відмінено")
+    await callback.answer("Дію відмінено")
 
 
-@router.callback_query(F.data.startswith("trade:undo_confirm:"))
-async def trade_undo_confirm(callback: CallbackQuery):
+@router.callback_query(F.data == "trade:edit_select")
+async def trade_edit_select(callback: CallbackQuery):
+    if not owner_service.is_owner(callback.from_user.id):
+        await callback.answer(ACCESS_DENIED)
+        return
+
+    transactions = get_active_transactions_desc(20)
+    if not transactions:
+        await callback.answer("Немає активних транзакцій для зміни.", show_alert=True)
+        return
+
+    await callback.message.answer(
+        "✏️ Вибери угоду, яку потрібно змінити:",
+        reply_markup=transaction_edit_select_kb(transactions),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "trade:edit_cancel")
+async def trade_edit_cancel(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.delete()
+    await callback.answer("Редагування відмінено")
+
+
+@router.callback_query(F.data.startswith("trade:edit_pick:"))
+async def trade_edit_pick(callback: CallbackQuery, state: FSMContext):
     if not owner_service.is_owner(callback.from_user.id):
         await callback.answer(ACCESS_DENIED)
         return
 
     tx_id = int(callback.data.rsplit(":", 1)[1])
-    tx = get_last_active_transaction()
-    if not tx or tx.get("id") != tx_id:
-        await callback.answer("Скасувати можна лише поточну останню транзакцію.", show_alert=True)
+    tx = get_transaction(tx_id)
+    if not tx or tx.get("status") != "ACTIVE":
+        await callback.answer("Ця транзакція вже не активна або не знайдена.", show_alert=True)
         return
 
-    if not _is_reversible_transaction(tx):
-        await callback.answer("Цю транзакцію не можна скасувати автоматично.", show_alert=True)
+    await state.update_data(edit_tx_id=tx_id)
+    fee_asset = tx.get("fee_asset", "USDT") or "USDT"
+    text = (
+        "✏️ Зміна угоди\n\n"
+        "Поточні значення:\n"
+        f"{transaction_line(tx)}\n\n"
+        "Введи нові значення в одному рядку:\n"
+        "price usdt btc fee fee_asset\n\n"
+        "Наприклад:\n"
+        "100000 44 0.00043956 0.00000044 BTC\n\n"
+        "Поточний рядок для копіювання:\n"
+        f"{tx.get('price', 0)} {tx.get('usdt_amount', 0)} {tx.get('btc_amount', 0)} {tx.get('fee', 0)} {fee_asset}"
+    )
+    await callback.message.edit_text(text, reply_markup=cancel_kb())
+    await state.set_state(EditTransaction.waiting_values)
+    await callback.answer()
+
+
+@router.message(EditTransaction.waiting_values)
+async def trade_edit_values(message: Message, state: FSMContext):
+    data = await state.get_data()
+    tx_id = data.get("edit_tx_id")
+    tx = get_transaction(tx_id)
+    if not tx or tx.get("status") != "ACTIVE":
+        await message.answer("❌ Транзакція не знайдена або вже не активна.")
+        await state.clear()
         return
 
-    void_transaction(tx_id, "Voided from Telegram UI")
+    parts = message.text.replace(",", ".").split()
+    if len(parts) != 5:
+        await message.answer("❌ Формат: price usdt btc fee fee_asset")
+        return
+
+    try:
+        price = float(parts[0])
+        usdt_amount = float(parts[1])
+        btc_amount = float(parts[2])
+        fee = float(parts[3])
+        fee_asset = parts[4].upper()
+        if price < 0 or usdt_amount < 0 or btc_amount < 0 or fee < 0:
+            raise ValueError
+        if fee_asset not in ("USDT", _base_coin(tx.get("symbol", settings_service.get_symbol()))):
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Перевір числа та валюту комісії.")
+        return
+
+    update_transaction_values(tx_id, price, usdt_amount, btc_amount, fee, fee_asset)
     portfolio_service.rebuild_portfolio_from_transactions()
+    buyback_service.sync_cycles_from_active_transactions()
+
+    symbol = settings_service.get_symbol()
+    try:
+        current_price = await binance_service.get_price(symbol)
+        metrics = portfolio_service.calculate_portfolio_metrics(current_price)
+        settings = settings_service.get_settings()
+        sheets_service.update_dashboard(metrics, settings)
+    except Exception:
+        pass
+
+    await message.answer("✅ Угоду змінено. Портфель повністю перераховано.", reply_markup=main_menu())
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("trade:delete_pick:"))
+async def trade_delete_pick(callback: CallbackQuery):
+    if not owner_service.is_owner(callback.from_user.id):
+        await callback.answer(ACCESS_DENIED)
+        return
+
+    tx_id = int(callback.data.rsplit(":", 1)[1])
+    tx = get_transaction(tx_id)
+    if not tx or tx.get("status") != "ACTIVE":
+        await callback.answer("Ця транзакція вже не активна або не знайдена.", show_alert=True)
+        return
+
+    text = (
+        "🗑 Видалення угоди з розрахунку\n\n"
+        "Бот позначить цю транзакцію як видалену та одразу перерахує портфель "
+        "з усіх інших активних транзакцій.\n\n"
+        "Транзакція:\n\n"
+        f"{transaction_line(tx)}"
+    )
+    await callback.message.edit_text(text, reply_markup=confirm_delete_trade_kb(tx_id))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("trade:delete_confirm:"))
+async def trade_delete_confirm(callback: CallbackQuery):
+    if not owner_service.is_owner(callback.from_user.id):
+        await callback.answer(ACCESS_DENIED)
+        return
+
+    tx_id = int(callback.data.rsplit(":", 1)[1])
+    tx = get_transaction(tx_id)
+    if not tx or tx.get("status") != "ACTIVE":
+        await callback.answer("Ця транзакція вже не активна або не знайдена.", show_alert=True)
+        return
+
+    void_transaction(tx_id, "Deleted from Telegram UI with full portfolio rebuild")
+    portfolio_service.rebuild_portfolio_from_transactions()
+    buyback_service.sync_cycles_from_active_transactions()
 
     symbol = settings_service.get_symbol()
     try:
@@ -538,13 +663,9 @@ async def trade_undo_confirm(callback: CallbackQuery):
     except Exception:
         pass
 
-    await callback.message.edit_text("✅ Останню транзакцію скасовано. Портфель перераховано.")
+    await callback.message.edit_text("✅ Угоду видалено з розрахунку. Портфель повністю перераховано.")
     await callback.message.answer("Головне меню:", reply_markup=main_menu())
     await callback.answer()
-
-
-def _is_reversible_transaction(tx: dict) -> bool:
-    return tx.get("type") in ("MANUAL_BUY", "MANUAL_SELL")
 
 
 # ─── Manual Buy ───────────────────────────────────────────────────────────────
@@ -607,11 +728,12 @@ async def manual_buy_confirm(callback: CallbackQuery, state: FSMContext):
             await callback.message.edit_text(_price_error(symbol))
             await state.clear()
             return
-        _execute_buy(amount, price, "MANUAL_BUY", "Ручна покупка за ринком")
         from bot.messages import _base_coin
         coin = _base_coin(symbol)
+        fee, fee_asset = _auto_fee(amount / price if price > 0 else 0.0, coin)
+        _execute_buy(amount, price, "MANUAL_BUY", "Ручна покупка за ринком", fee, fee_asset)
         await callback.message.edit_text(
-            f"✅ Куплено {coin} на {amount:.2f} USDT\nЦіна: {price:,.2f} USDT"
+            f"✅ Куплено {coin} на {amount:.2f} USDT\nЦіна: {price:,.2f} USDT\nКомісія: {_format_fee(fee, fee_asset)}"
         )
         await state.clear()
     await callback.answer()
@@ -631,17 +753,18 @@ async def manual_buy_custom_price(message: Message, state: FSMContext):
     symbol = settings_service.get_symbol()
     from bot.messages import _base_coin
     coin = _base_coin(symbol)
-    _execute_buy(amount, price, "MANUAL_BUY", "Ручна покупка за своєю ціною")
+    fee, fee_asset = _auto_fee(amount / price if price > 0 else 0.0, coin)
+    _execute_buy(amount, price, "MANUAL_BUY", "Ручна покупка за своєю ціною", fee, fee_asset)
     await message.answer(
-        f"✅ Куплено {coin} на {amount:.2f} USDT\nЦіна: {price:,.2f} USDT",
+        f"✅ Куплено {coin} на {amount:.2f} USDT\nЦіна: {price:,.2f} USDT\nКомісія: {_format_fee(fee, fee_asset)}",
         reply_markup=main_menu(),
     )
     await state.clear()
 
 
-def _execute_buy(amount: float, price: float, tx_type: str, note: str):
-    portfolio_service.apply_buy(amount, price, tx_type, note)
-    portfolio_service.add_deposit(amount)
+def _execute_buy(amount: float, price: float, tx_type: str, note: str, fee: float = 0.0, fee_asset: str = "USDT"):
+    portfolio_service.apply_buy(amount, price, tx_type, note, fee=fee, fee_asset=fee_asset)
+    portfolio_service.add_deposit(amount + (fee if fee_asset == "USDT" else 0.0))
     settings = settings_service.get_settings()
     metrics = portfolio_service.calculate_portfolio_metrics(price)
     sheets_service.update_dashboard(metrics, settings)
@@ -707,13 +830,22 @@ async def manual_sell_confirm(callback: CallbackQuery, state: FSMContext):
             await callback.message.edit_text(_price_error(symbol))
             await state.clear()
             return
-        from bot.messages import _base_coin
-        coin = _base_coin(symbol)
-        portfolio_service.apply_sell(pct, price, "MANUAL_SELL", "Ручний продаж за ринком")
+        portfolio = portfolio_service.get_portfolio()
+        btc_to_sell = portfolio.get("btc_amount", 0.0) * pct / 100
+        fee, fee_asset = _auto_fee(btc_to_sell * price, "USDT")
+        try:
+            portfolio_service.apply_sell(pct, price, "MANUAL_SELL", "Ручний продаж за ринком", fee=fee, fee_asset=fee_asset)
+        except ValueError as e:
+            await callback.message.answer(f"❌ {e}")
+            await state.clear()
+            await callback.answer()
+            return
         settings = settings_service.get_settings()
         metrics = portfolio_service.calculate_portfolio_metrics(price)
         sheets_service.update_dashboard(metrics, settings)
-        await callback.message.edit_text(f"✅ Продано {pct:.2f}% {coin}\nЦіна: {price:,.2f} USDT")
+        from bot.messages import _base_coin
+        coin = _base_coin(symbol)
+        await callback.message.edit_text(f"✅ Продано {pct:.2f}% {coin}\nЦіна: {price:,.2f} USDT\nКомісія: {_format_fee(fee, fee_asset)}")
         await state.clear()
     await callback.answer()
 
@@ -729,15 +861,23 @@ async def manual_sell_custom_price(message: Message, state: FSMContext):
         return
     data = await state.get_data()
     pct = data.get("percent", 0)
+    portfolio = portfolio_service.get_portfolio()
+    btc_to_sell = portfolio.get("btc_amount", 0.0) * pct / 100
+    fee, fee_asset = _auto_fee(btc_to_sell * price, "USDT")
     symbol = settings_service.get_symbol()
     from bot.messages import _base_coin
     coin = _base_coin(symbol)
-    portfolio_service.apply_sell(pct, price, "MANUAL_SELL", "Ручний продаж за своєю ціною")
+    try:
+        portfolio_service.apply_sell(pct, price, "MANUAL_SELL", "Ручний продаж за своєю ціною", fee=fee, fee_asset=fee_asset)
+    except ValueError as e:
+        await message.answer(f"❌ {e}")
+        await state.clear()
+        return
     settings = settings_service.get_settings()
     metrics = portfolio_service.calculate_portfolio_metrics(price)
     sheets_service.update_dashboard(metrics, settings)
     await message.answer(
-        f"✅ Продано {pct:.2f}% {coin}\nЦіна: {price:,.2f} USDT",
+        f"✅ Продано {pct:.2f}% {coin}\nЦіна: {price:,.2f} USDT\nКомісія: {_format_fee(fee, fee_asset)}",
         reply_markup=main_menu(),
     )
     await state.clear()
@@ -821,16 +961,13 @@ async def monthly_confirm(callback: CallbackQuery, state: FSMContext):
             return
         from bot.messages import _base_coin
         coin = _base_coin(symbol)
-        portfolio_service.apply_buy(btc_buy, price, "MONTHLY_DEPOSIT", "Щомісячне поповнення — купівля")
-        portfolio_service.add_reserve(reserve, "RESERVE_ADD", "Щомісячне поповнення — резерв")
-        portfolio_service.add_deposit(monthly)
-        settings = settings_service.get_settings()
-        metrics = portfolio_service.calculate_portfolio_metrics(price)
-        sheets_service.update_dashboard(metrics, settings)
+        fee, fee_asset = _auto_fee(btc_buy / price if price > 0 else 0.0, coin)
+        _execute_deposit_buy(monthly, btc_buy, reserve, price, "MONTHLY_DEPOSIT", "Щомісячне поповнення", fee, fee_asset)
         await callback.message.edit_text(
             f"✅ Щомісячне поповнення виконано!\n"
             f"{coin} куплено на {btc_buy:.2f} USDT за ціною {price:,.2f}\n"
-            f"Додано в резерв: {reserve:.2f} USDT"
+            f"Додано в резерв: {reserve:.2f} USDT\n"
+            f"Комісія: {_format_fee(fee, fee_asset)}"
         )
         await state.clear()
     await callback.answer()
@@ -845,29 +982,48 @@ async def monthly_custom_price(message: Message, state: FSMContext):
     except ValueError:
         await message.answer("❌ Введи коректну ціну у USDT.")
         return
-
     data = await state.get_data()
-    monthly = data.get("monthly", 500)
-    btc_buy = data.get("btc_buy", monthly * 0.70)
-    reserve = data.get("reserve", monthly * 0.30)
+    btc_buy = data.get("btc_buy", data.get("monthly", 500) * 0.70)
     symbol = settings_service.get_symbol()
     from bot.messages import _base_coin
     coin = _base_coin(symbol)
-
-    portfolio_service.apply_buy(btc_buy, price, "MONTHLY_DEPOSIT", "Щомісячне поповнення — купівля")
-    portfolio_service.add_reserve(reserve, "RESERVE_ADD", "Щомісячне поповнення — резерв")
-    portfolio_service.add_deposit(monthly)
-    settings = settings_service.get_settings()
-    metrics = portfolio_service.calculate_portfolio_metrics(price)
-    sheets_service.update_dashboard(metrics, settings)
+    monthly = data.get("monthly", 500)
+    reserve = data.get("reserve", monthly * 0.30)
+    fee, fee_asset = _auto_fee(btc_buy / price if price > 0 else 0.0, coin)
+    _execute_deposit_buy(monthly, btc_buy, reserve, price, "MONTHLY_DEPOSIT", "Щомісячне поповнення", fee, fee_asset)
 
     await message.answer(
         f"✅ Щомісячне поповнення виконано!\n"
         f"{coin} куплено на {btc_buy:.2f} USDT за ціною {price:,.2f}\n"
-        f"Додано в резерв: {reserve:.2f} USDT"
+        f"Додано в резерв: {reserve:.2f} USDT\n"
+        f"Комісія: {_format_fee(fee, fee_asset)}"
     )
     await state.clear()
 
+
+def _execute_deposit_buy(
+    total_deposit: float,
+    btc_buy: float,
+    reserve: float,
+    price: float,
+    tx_type: str,
+    note_prefix: str,
+    fee: float,
+    fee_asset: str,
+):
+    portfolio_service.apply_buy(
+        btc_buy,
+        price,
+        tx_type,
+        f"{note_prefix} — купівля",
+        fee=fee,
+        fee_asset=fee_asset,
+    )
+    portfolio_service.add_reserve(reserve, "RESERVE_ADD", f"{note_prefix} — резерв")
+    portfolio_service.add_deposit(total_deposit + (fee if fee_asset == "USDT" else 0.0))
+    settings = settings_service.get_settings()
+    metrics = portfolio_service.calculate_portfolio_metrics(price)
+    sheets_service.update_dashboard(metrics, settings)
 
 # ─── Extra Deposit ────────────────────────────────────────────────────────────
 
@@ -951,16 +1107,13 @@ async def extra_buy_confirm(callback: CallbackQuery, state: FSMContext):
             return
         from bot.messages import _base_coin
         coin = _base_coin(symbol)
-        portfolio_service.apply_buy(btc_buy, price, "EXTRA_DEPOSIT", "Додаткове поповнення — купівля")
-        portfolio_service.add_reserve(reserve, "RESERVE_ADD", "Додаткове поповнення — резерв")
-        portfolio_service.add_deposit(amount)
-        settings = settings_service.get_settings()
-        metrics = portfolio_service.calculate_portfolio_metrics(price)
-        sheets_service.update_dashboard(metrics, settings)
+        fee, fee_asset = _auto_fee(btc_buy / price if price > 0 else 0.0, coin)
+        _execute_deposit_buy(amount, btc_buy, reserve, price, "EXTRA_DEPOSIT", "Додаткове поповнення", fee, fee_asset)
         await callback.message.edit_text(
             f"✅ Додаткове поповнення виконано!\n"
             f"{coin} куплено на {btc_buy:.2f} USDT за ціною {price:,.2f}\n"
-            f"Додано в резерв: {reserve:.2f} USDT"
+            f"Додано в резерв: {reserve:.2f} USDT\n"
+            f"Комісія: {_format_fee(fee, fee_asset)}"
         )
         await state.clear()
     await callback.answer()
@@ -984,22 +1137,17 @@ async def extra_custom_price(message: Message, state: FSMContext):
         await message.answer("❌ Не знайдено суму поповнення. Спробуй ще раз.")
         await state.clear()
         return
-
     symbol = settings_service.get_symbol()
     from bot.messages import _base_coin
     coin = _base_coin(symbol)
-
-    portfolio_service.apply_buy(btc_buy, price, "EXTRA_DEPOSIT", "Додаткове поповнення — купівля")
-    portfolio_service.add_reserve(reserve, "RESERVE_ADD", "Додаткове поповнення — резерв")
-    portfolio_service.add_deposit(amount)
-    settings = settings_service.get_settings()
-    metrics = portfolio_service.calculate_portfolio_metrics(price)
-    sheets_service.update_dashboard(metrics, settings)
+    fee, fee_asset = _auto_fee(btc_buy / price if price > 0 else 0.0, coin)
+    _execute_deposit_buy(amount, btc_buy, reserve, price, "EXTRA_DEPOSIT", "Додаткове поповнення", fee, fee_asset)
 
     await message.answer(
         f"✅ Додаткове поповнення виконано!\n"
         f"{coin} куплено на {btc_buy:.2f} USDT за ціною {price:,.2f}\n"
-        f"Додано в резерв: {reserve:.2f} USDT"
+        f"Додано в резерв: {reserve:.2f} USDT\n"
+        f"Комісія: {_format_fee(fee, fee_asset)}"
     )
     await state.clear()
 
@@ -1023,21 +1171,12 @@ async def signal_confirm_cb(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
-    if action == "custom":
+    if action in ("custom", "market"):
         await state.update_data(signal_id=signal_id, signal_type=signal_type)
-        await callback.message.answer("Введи ціну виконання у USDT:", reply_markup=cancel_kb())
+        await callback.message.answer("Введи фактичну ціну виконання у USDT:", reply_markup=cancel_kb())
         await state.set_state(SignalConfirm.waiting_custom_price)
         await callback.answer()
         return
-
-    if action == "market":
-        symbol = settings_service.get_symbol()
-        try:
-            price = await binance_service.get_price(symbol)
-        except Exception:
-            await callback.message.edit_text(_price_error(symbol))
-            return
-        await _execute_signal_action(callback.message, state, signal_id, signal_type, price)
     await callback.answer()
 
 
@@ -1051,12 +1190,32 @@ async def signal_confirm_custom_price(message: Message, state: FSMContext):
         await message.answer("❌ Введи коректну ціну у USDT.")
         return
     data = await state.get_data()
-    await _execute_signal_action(message, state, data["signal_id"], data["signal_type"], price)
+    symbol = settings_service.get_symbol()
+    from bot.messages import _base_coin
+    coin = _base_coin(symbol)
+    if data["signal_type"] == "BUY":
+        sig_data = signal_service.get_signal(data["signal_id"]) or {}
+        amount_usdt = sig_data.get("amount_usdt", 0.0)
+        fee, fee_asset = _auto_fee(amount_usdt / price if price > 0 else 0.0, coin)
+    else:
+        sig_data = signal_service.get_signal(data["signal_id"]) or {}
+        pct = sig_data.get("amount_btc_percent", 0.0)
+        portfolio = portfolio_service.get_portfolio()
+        btc_to_sell = portfolio.get("btc_amount", 0.0) * pct / 100
+        fee, fee_asset = _auto_fee(btc_to_sell * price, "USDT")
+    await _execute_signal_action(message, state, data["signal_id"], data["signal_type"], price, fee, fee_asset)
 
 
-async def _execute_signal_action(msg, state: FSMContext, signal_id: int, signal_type: str, price: float):
-    signals = signal_service.get_last_signals(20)
-    sig_data = next((s for s in signals if s["id"] == signal_id), None)
+async def _execute_signal_action(
+    msg,
+    state: FSMContext,
+    signal_id: int,
+    signal_type: str,
+    price: float,
+    fee: float = 0.0,
+    fee_asset: str = "USDT",
+):
+    sig_data = signal_service.get_signal(signal_id)
     if not sig_data:
         await msg.answer("❌ Сигнал не знайдено.")
         await state.clear()
@@ -1075,6 +1234,8 @@ async def _execute_signal_action(msg, state: FSMContext, signal_id: int, signal_
                 "BUY",
                 f"Покупка за сигналом #{signal_id}",
                 spend_from_reserve=True,
+                fee=fee,
+                fee_asset=fee_asset,
             )
         except ValueError as e:
             await msg.answer(f"❌ {e}")
@@ -1082,19 +1243,36 @@ async def _execute_signal_action(msg, state: FSMContext, signal_id: int, signal_
             return
         if sig_data.get("trigger_type") == "BUYBACK" and sig_data.get("buyback_cycle_id"):
             btc_bought = amount_usdt / price if price > 0 else 0
+            if fee_asset == coin:
+                btc_bought = max(btc_bought - fee, 0.0)
             buyback_service.mark_level_done(
                 sig_data["buyback_cycle_id"],
                 sig_data.get("level_percent", 0),
                 btc_bought,
             )
         signal_service.update_signal_status(signal_id, "CONFIRMED")
-        await msg.answer(f"✅ Куплено {coin} на {amount_usdt:.2f} USDT за ціною {price:,.2f}")
+        await msg.answer(f"✅ Куплено {coin} на {amount_usdt:.2f} USDT за ціною {price:,.2f}\nКомісія: {fee:g} {fee_asset}")
     elif signal_type == "SELL":
         pct = sig_data.get("amount_btc_percent", 0)
         portfolio_before = portfolio_service.get_portfolio()
-        btc_sold = portfolio_before.get("btc_amount", 0.0) * pct / 100
-        usdt_received = btc_sold * price
-        portfolio_service.apply_sell(pct, price, "SELL", f"Продаж за сигналом #{signal_id}")
+        gross_btc_sold = portfolio_before.get("btc_amount", 0.0) * pct / 100
+        btc_sold = gross_btc_sold
+        if fee_asset == coin:
+            btc_sold += fee
+        usdt_received = gross_btc_sold * price - (fee if fee_asset == "USDT" else 0.0)
+        try:
+            portfolio_service.apply_sell(
+                pct,
+                price,
+                "SELL",
+                f"Продаж за сигналом #{signal_id}",
+                fee=fee,
+                fee_asset=fee_asset,
+            )
+        except ValueError as e:
+            await msg.answer(f"❌ {e}")
+            await state.clear()
+            return
         if sig_data.get("strategy_name") == "accumulation_v2" and sig_data.get("trigger_type") == "SELL_PROFIT":
             buyback_service.create_cycle(
                 sell_price=price,
@@ -1104,7 +1282,7 @@ async def _execute_signal_action(msg, state: FSMContext, signal_id: int, signal_
                 strategy_name="accumulation_v2",
             )
         signal_service.update_signal_status(signal_id, "CONFIRMED")
-        await msg.answer(f"✅ Продано {pct:.2f}% {coin} за ціною {price:,.2f}")
+        await msg.answer(f"✅ Продано {pct:.2f}% {coin} за ціною {price:,.2f}\nКомісія: {fee:g} {fee_asset}")
 
     settings = settings_service.get_settings()
     metrics = portfolio_service.calculate_portfolio_metrics(price)
@@ -1123,15 +1301,10 @@ async def btn_signals(message: Message):
     sigs = signal_service.get_last_signals(1)
     if sigs:
         last = sigs[0]
-        strategy = get_strategy(last.get("strategy_name", "accumulation"))
         text = (
             "🔔 Сигнали\n\n"
-            f"Останній сигнал:\n"
-            f"Тип: {last.get('signal_type', '')}\n"
-            f"Стратегія: {strategy.title}\n"
-            f"Ціна: {last.get('price', 0):,.2f} USDT\n"
-            f"Статус: {last.get('status', '')}\n\n"
-            f"Причина:\n{last.get('reason', '')}"
+            "Останній сигнал:\n\n"
+            f"{signal_line(last)}"
         )
     else:
         text = "🔔 Сигнали\n\nСигналів ще немає."
@@ -1302,6 +1475,67 @@ async def settings_interval_value(message: Message, state: FSMContext):
     settings_service.update_check_interval(minutes)
     await message.answer(f"✅ Частота перевірки оновлена: {minutes} хв", reply_markup=main_menu())
     await state.clear()
+
+
+@router.callback_query(F.data == "settings:commission")
+async def settings_commission(callback: CallbackQuery, state: FSMContext):
+    if not owner_service.is_owner(callback.from_user.id):
+        await callback.answer(ACCESS_DENIED)
+        return
+    current = settings_service.get_settings().get("commission_percent", 0.1)
+    await callback.message.answer(
+        f"Поточна комісія: {current:g}%\n\n"
+        "Введи новий відсоток комісії біржі.\n"
+        "Наприклад: 0.1 для Binance 0.1%.",
+        reply_markup=cancel_kb(),
+    )
+    await state.set_state(SettingsStates.waiting_commission_percent)
+    await callback.answer()
+
+
+@router.message(SettingsStates.waiting_commission_percent)
+async def settings_commission_value(message: Message, state: FSMContext):
+    try:
+        value = float(message.text.replace(",", "."))
+        if value < 0 or value > 10:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введи коректний відсоток від 0 до 10.")
+        return
+    settings_service.update_commission_percent(value)
+    await message.answer(f"✅ Комісію оновлено: {value:g}%", reply_markup=main_menu())
+    await state.clear()
+
+
+@router.callback_query(F.data == "settings:commission_backfill")
+async def settings_commission_backfill(callback: CallbackQuery):
+    if not owner_service.is_owner(callback.from_user.id):
+        await callback.answer(ACCESS_DENIED)
+        return
+
+    settings = settings_service.get_settings()
+    commission_percent = settings.get("commission_percent", 0.1)
+    result = apply_commission_to_zero_fee_transactions(commission_percent)
+    portfolio_service.rebuild_portfolio_from_transactions()
+    buyback_service.sync_cycles_from_active_transactions()
+
+    symbol = settings_service.get_symbol()
+    try:
+        price = await binance_service.get_price(symbol)
+        metrics = portfolio_service.calculate_portfolio_metrics(price)
+        sheets_service.update_dashboard(metrics, settings_service.get_settings())
+    except Exception:
+        pass
+
+    await callback.message.answer(
+        "✅ Старі угоди перераховано з комісією.\n\n"
+        f"Комісія: {commission_percent:g}%\n"
+        f"BUY угод оновлено: {result['buy']}\n"
+        f"SELL угод оновлено: {result['sell']}\n"
+        f"Всього: {result['total']}",
+        reply_markup=main_menu(),
+    )
+    await callback.answer()
 
 
 @router.callback_query(F.data == "settings:strategy")

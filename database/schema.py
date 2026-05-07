@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     usdt_amount REAL DEFAULT 0,
     btc_amount REAL DEFAULT 0,
     fee REAL DEFAULT 0,
+    fee_asset TEXT DEFAULT 'USDT',
     note TEXT,
     status TEXT DEFAULT 'ACTIVE',
     voided_at TEXT,
@@ -61,6 +62,7 @@ CREATE TABLE IF NOT EXISTS settings (
     signals_enabled INTEGER DEFAULT 1,
     active_strategy TEXT DEFAULT 'accumulation',
     symbol TEXT DEFAULT 'BTCUSDT',
+    commission_percent REAL DEFAULT 0.1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -87,6 +89,7 @@ CREATE TABLE IF NOT EXISTS buyback_cycles (
     level_4_done INTEGER DEFAULT 0,
     status TEXT DEFAULT 'OPEN',
     created_at TEXT NOT NULL,
+    closed_at TEXT,
     updated_at TEXT
 );
 

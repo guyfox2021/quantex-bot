@@ -1,5 +1,6 @@
 from strategies.base import BaseStrategy, StrategySignal
 from utils.calculations import calculate_drawdown, calculate_profit_percent
+from utils.formatters import fmt_signal_amount
 
 
 class AccumulationStrategy(BaseStrategy):
@@ -48,7 +49,7 @@ class AccumulationStrategy(BaseStrategy):
                         signal_type="BUY",
                         strategy_name=self.name,
                         reason=f"BTC впав на -{drawdown:.2f}% від локального максимуму.",
-                        recommended_action=f"Купити BTC на {amount:.2f} USDT.",
+                        recommended_action=f"Купити BTC на {fmt_signal_amount(amount)} USDT.",
                         amount_usdt=amount,
                         trigger_type="BUY_DROP",
                         level_percent=level,
@@ -65,7 +66,7 @@ class AccumulationStrategy(BaseStrategy):
                         signal_type="SELL",
                         strategy_name=self.name,
                         reason=f"BTC вище середньої ціни на +{profit:.2f}%.",
-                        recommended_action=f"Продати {pct:.2f}% BTC-позиції.",
+                        recommended_action=f"Продати {fmt_signal_amount(pct)}% BTC-позиції.",
                         amount_btc_percent=pct,
                         trigger_type="SELL_PROFIT",
                         level_percent=level,

@@ -1,5 +1,6 @@
 from strategies.base import BaseStrategy, StrategySignal
 from utils.calculations import calculate_drawdown, calculate_profit_percent
+from utils.formatters import fmt_signal_amount
 
 
 class AccumulationV2Strategy(BaseStrategy):
@@ -43,6 +44,8 @@ class AccumulationV2Strategy(BaseStrategy):
         if buyback_signal:
             return buyback_signal
 
+        has_open_buyback = bool(open_buybacks)
+
         if avg_price > 0 and btc_amount > 0:
             profit = calculate_profit_percent(current_price, avg_price)
             for lvl in sorted(self.SELL_LEVELS, key=lambda x: x["level"], reverse=True):
@@ -54,11 +57,14 @@ class AccumulationV2Strategy(BaseStrategy):
                         signal_type="SELL",
                         strategy_name=self.name,
                         reason=f"BTC вище середньої ціни на +{profit:.2f}%.",
-                        recommended_action=f"Продати {pct:.2f}% BTC-позиції.",
+                        recommended_action=f"Продати {fmt_signal_amount(pct)}% BTC-позиції.",
                         amount_btc_percent=pct,
                         trigger_type="SELL_PROFIT",
                         level_percent=level,
                     )
+
+        if has_open_buyback:
+            return self._hold("Є відкритий BUYBACK cycle. BUY_DIP заблоковано до його закриття.")
 
         if last_high > 0 and btc_amount > 0:
             drawdown = calculate_drawdown(last_high, current_price)
@@ -74,7 +80,7 @@ class AccumulationV2Strategy(BaseStrategy):
                         signal_type="BUY",
                         strategy_name=self.name,
                         reason=f"BTC впав на -{drawdown:.2f}% від локального максимуму.",
-                        recommended_action=f"Купити BTC на {amount:.2f} USDT ({reserve_percent:.0f}% резерву).",
+                        recommended_action=f"Купити BTC на {fmt_signal_amount(amount)} USDT.",
                         amount_usdt=amount,
                         trigger_type="BUY_DIP",
                         level_percent=level,
@@ -109,8 +115,8 @@ class AccumulationV2Strategy(BaseStrategy):
                 return StrategySignal(
                     signal_type="BUY",
                     strategy_name=self.name,
-                    reason=f"Після продажу за {sell_price:,.2f} USDT ціна відкотилася на -{drop:.2f}%.",
-                    recommended_action=f"Викупити {btc_to_buy:.8f} BTC на {amount:.2f} USDT.",
+                    reason=f"BTC відкотився після продажу на -{drop:.2f}%.",
+                    recommended_action=f"Викупити BTC на {fmt_signal_amount(amount)} USDT.",
                     amount_usdt=amount,
                     trigger_type="BUYBACK",
                     level_percent=level,
@@ -157,7 +163,9 @@ class AccumulationV2Strategy(BaseStrategy):
             "BUY DIP від локального максимуму:\n"
             "-3%  -> купити на 15% USDT-резерву\n"
             "-5%  -> купити на 25% USDT-резерву\n"
-            "-10% -> купити на 40% USDT-резерву\n\n"
+            "-10% -> купити на 40% USDT-резерву\n"
+            "BUY_DIP блокується, доки відкритий BUYBACK cycle.\n\n"
+            "BUY cooldown: мінімум 6 годин між BUY-сигналами.\n\n"
             "Пріоритет сигналів: BUYBACK -> SELL_PROFIT -> BUY_DIP -> HOLD"
         )
 

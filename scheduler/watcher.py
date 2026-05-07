@@ -51,6 +51,10 @@ async def run_watcher(bot: Bot):
             if signal.signal_type not in ("BUY", "SELL"):
                 continue
 
+            if signal.signal_type == "BUY" and not signal_service.can_send_buy_signal(cooldown_hours=6):
+                logger.info("Watcher: BUY signal skipped because cooldown is active.")
+                continue
+
             if signal.trigger_type and signal.level_percent is not None:
                 if signal_service.has_active_signal_for_trigger(strategy.name, signal.trigger_type, signal.level_percent):
                     continue

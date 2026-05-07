@@ -1,4 +1,4 @@
-from utils.formatters import fmt_usdt, fmt_btc, fmt_percent, fmt_price, fmt_local_datetime
+from utils.formatters import fmt_usdt, fmt_btc, fmt_percent, fmt_price, fmt_local_datetime, fmt_signal_amount
 from strategies.registry import get_strategy
 
 
@@ -28,6 +28,17 @@ def _signal_badge(signal_type: str) -> str:
         "SELL": "🔴 SELL",
         "HOLD": "🟡 HOLD",
     }.get(signal_type, signal_type)
+
+
+def _signal_title(signal_type: str, trigger_type: str | None = None) -> str:
+    if trigger_type:
+        return {
+            "BUY_DROP": "📉 BUY_DIP",
+            "BUY_DIP": "📉 BUY_DIP",
+            "BUYBACK": "🟢 BUYBACK",
+            "SELL_PROFIT": "📈 SELL_PROFIT",
+        }.get(trigger_type, trigger_type)
+    return _signal_badge(signal_type)
 
 
 def _status_badge(status: str) -> str:
@@ -120,32 +131,20 @@ def strategy_message(active_strategy: str) -> str:
 
 def signal_message(signal, symbol: str = "BTCUSDT", price: float = 0.0, portfolio: dict | None = None) -> str:
     coin = _base_coin(symbol)
-    price_line = f"\n💰 Поточна ціна {coin}: {fmt_price(price)} USDT" if price > 0 else ""
-    sell_amount_line = ""
-    if signal.signal_type == "SELL" and portfolio and signal.amount_btc_percent > 0:
-        btc_amount = portfolio.get("btc_amount", 0.0)
-        btc_to_sell = btc_amount * signal.amount_btc_percent / 100
-        usdt_estimate = btc_to_sell * price if price > 0 else 0.0
-        sell_amount_line = (
-            f"\n\n🧮 Розрахунок продажу:\n"
-            f"{signal.amount_btc_percent:.2f}% позиції = {fmt_btc(btc_to_sell)} {coin}"
-            f"\n💰 Орієнтовно: {fmt_usdt(usdt_estimate)} USDT"
-        )
+    title = _signal_title(signal.signal_type, signal.trigger_type)
     if signal.signal_type == "BUY":
         return (
-            f"{_signal_badge(signal.signal_type)} | {coin}\n\n"
-            f"📌 Причина:\n{signal.reason}\n\n"
-            f"⚡ Рекомендована дія:\n{signal.recommended_action}"
-            f"{sell_amount_line}"
-            f"{price_line}"
+            f"{title} | {coin}\n\n"
+            f"{signal.reason}\n\n"
+            f"Рекомендація:\n{signal.recommended_action}"
+            f"\n\nПісля виконання введи фактичну ціну покупки."
         )
     elif signal.signal_type == "SELL":
         return (
-            f"{_signal_badge(signal.signal_type)} | {coin}\n\n"
-            f"📌 Причина:\n{signal.reason}\n\n"
-            f"⚡ Рекомендована дія:\n{signal.recommended_action}"
-            f"{sell_amount_line}"
-            f"{price_line}"
+            f"{title} | {coin}\n\n"
+            f"{signal.reason}\n\n"
+            f"Рекомендація:\n{signal.recommended_action}"
+            f"\n\nПісля виконання введи фактичну ціну продажу."
         )
     else:
         return (
@@ -163,6 +162,7 @@ def settings_message(settings: dict) -> str:
         f"🪙 Монета: {_coin_badge(symbol)} ({symbol})\n"
         f"🎯 Ціль портфеля: {fmt_usdt(settings.get('target_value', 5000))} USDT\n"
         f"📅 Щомісячне поповнення: {fmt_usdt(settings.get('monthly_deposit', 500))} USDT\n"
+        f"💸 Комісія біржі: {fmt_signal_amount(settings.get('commission_percent', 0.1))}%\n"
         f"⏱ Частота перевірки: {settings.get('check_interval_minutes', 5)} хв\n"
         f"🔔 Сигнали: {signals_status}\n"
         f"🧠 Активна стратегія: {strategy.title}"
@@ -177,25 +177,30 @@ def transaction_line(tx: dict) -> str:
     usdt = fmt_usdt(tx.get("usdt_amount", 0))
     btc = fmt_btc(tx.get("btc_amount", 0))
     price = fmt_price(tx.get("price", 0))
+    fee = float(tx.get("fee", 0) or 0)
+    fee_asset = tx.get("fee_asset", "USDT") or "USDT"
+    fee_text = fmt_btc(fee) if fee_asset == _base_coin(symbol) else fmt_usdt(fee)
+    fee_line = f"\nКомісія: {fee_text} {fee_asset}" if fee > 0 else ""
     return (
         f"<b>{created}</b>\n"
         f"{_tx_badge(tx_type)} | {usdt} USDT | {btc} {coin}\n"
         f"Ціна: {price}"
+        f"{fee_line}"
     )
 
 
 def signal_line(sig: dict) -> str:
     created = fmt_local_datetime(sig.get("created_at", ""))
     strategy_name = sig.get("strategy_name", "")
-    price = fmt_price(sig.get("price", 0))
     status = sig.get("status", "")
     reason = sig.get("reason", "")
+    recommended_action = sig.get("recommended_action", "")
     strategy = get_strategy(strategy_name)
     return (
         f"🕒 {created}\n"
-        f"{_signal_badge(sig.get('signal_type', ''))}\n"
+        f"{_signal_title(sig.get('signal_type', ''), sig.get('trigger_type'))}\n"
         f"🧠 Стратегія: {strategy.title}\n"
-        f"💹 Ціна: {price} USDT\n"
         f"📌 Статус: {_status_badge(status)}\n\n"
-        f"Причина:\n{reason}"
+        f"Причина:\n{reason}\n\n"
+        f"Рекомендація:\n{recommended_action}"
     )

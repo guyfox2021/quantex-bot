@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from database.db import get_connection
 from strategies.base import StrategySignal
 
@@ -49,6 +49,36 @@ def get_last_signals(limit: int = 10) -> list[dict]:
             "SELECT * FROM signals ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def get_signal(signal_id: int) -> dict | None:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM signals WHERE id = ?", (signal_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def get_last_buy_signal_time() -> datetime | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            """SELECT created_at FROM signals
+               WHERE signal_type = 'BUY'
+               AND status IN ('NEW', 'SENT', 'CONFIRMED')
+               ORDER BY created_at DESC LIMIT 1"""
+        ).fetchone()
+    if not row or not row["created_at"]:
+        return None
+    try:
+        dt = datetime.fromisoformat(row["created_at"])
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def can_send_buy_signal(cooldown_hours: int = 6) -> bool:
+    last_buy_time = get_last_buy_signal_time()
+    if not last_buy_time:
+        return True
+    return datetime.now(timezone.utc) - last_buy_time >= timedelta(hours=cooldown_hours)
 
 
 def has_active_signal_for_trigger(strategy_name: str, trigger_type: str, level_percent: float) -> bool:

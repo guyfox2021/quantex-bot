@@ -18,6 +18,11 @@ def fmt_percent(value: float) -> str:
     return f"{sign}{value:.2f}%"
 
 
+def fmt_signal_amount(value: float, suffix: str = "") -> str:
+    text = f"{value:,.2f}".rstrip("0").rstrip(".")
+    return f"{text}{suffix}"
+
+
 def fmt_price(value: float) -> str:
     return f"{value:,.2f}"
 
