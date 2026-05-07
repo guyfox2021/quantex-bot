@@ -27,7 +27,9 @@ class ExtraDeposit(StatesGroup):
 
 
 class EditTransaction(StatesGroup):
-    waiting_values = State()
+    waiting_price = State()
+    waiting_usdt_amount = State()
+    waiting_coin_amount = State()
 
 
 class SettingsStates(StatesGroup):

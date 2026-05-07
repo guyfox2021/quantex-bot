@@ -551,26 +551,39 @@ async def trade_edit_pick(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Ця транзакція вже не активна або не знайдена.", show_alert=True)
         return
 
-    await state.update_data(edit_tx_id=tx_id)
-    fee_asset = tx.get("fee_asset", "USDT") or "USDT"
-    text = (
-        "✏️ Зміна угоди\n\n"
-        "Поточні значення:\n"
-        f"{transaction_line(tx)}\n\n"
-        "Введи нові значення в одному рядку:\n"
-        "price usdt btc fee fee_asset\n\n"
-        "Наприклад:\n"
-        "100000 44 0.00043956 0.00000044 BTC\n\n"
-        "Поточний рядок для копіювання:\n"
-        f"{tx.get('price', 0)} {tx.get('usdt_amount', 0)} {tx.get('btc_amount', 0)} {tx.get('fee', 0)} {fee_asset}"
-    )
-    await callback.message.edit_text(text, reply_markup=cancel_kb())
-    await state.set_state(EditTransaction.waiting_values)
+    edit_kind = _edit_transaction_kind(tx)
+    await state.update_data(edit_tx_id=tx_id, edit_kind=edit_kind)
+
+    if edit_kind == "USDT_ONLY":
+        text = (
+            "✏️ Зміна угоди\n\n"
+            f"{transaction_line(tx)}\n\n"
+            "Введи нову суму USDT:"
+        )
+        await callback.message.edit_text(text, reply_markup=cancel_kb())
+        await state.set_state(EditTransaction.waiting_usdt_amount)
+    else:
+        side_text = "покупки" if edit_kind == "BUY" else "продажу"
+        text = (
+            "✏️ Зміна угоди\n\n"
+            f"{transaction_line(tx)}\n\n"
+            f"Введи фактичну ціну {side_text} у USDT:"
+        )
+        await callback.message.edit_text(text, reply_markup=cancel_kb())
+        await state.set_state(EditTransaction.waiting_price)
     await callback.answer()
 
 
-@router.message(EditTransaction.waiting_values)
-async def trade_edit_values(message: Message, state: FSMContext):
+@router.message(EditTransaction.waiting_price)
+async def trade_edit_price(message: Message, state: FSMContext):
+    try:
+        price = float(message.text.replace(",", "."))
+        if price <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введи коректну ціну.")
+        return
+
     data = await state.get_data()
     tx_id = data.get("edit_tx_id")
     tx = get_transaction(tx_id)
@@ -579,25 +592,109 @@ async def trade_edit_values(message: Message, state: FSMContext):
         await state.clear()
         return
 
-    parts = message.text.replace(",", ".").split()
-    if len(parts) != 5:
-        await message.answer("❌ Формат: price usdt btc fee fee_asset")
+    edit_kind = data.get("edit_kind")
+    await state.update_data(edit_price=price)
+    if edit_kind == "BUY":
+        await message.answer("Введи суму покупки в USDT:", reply_markup=cancel_kb())
+        await state.set_state(EditTransaction.waiting_usdt_amount)
         return
 
+    symbol = tx.get("symbol", settings_service.get_symbol())
+    from bot.messages import _base_coin
+    coin = _base_coin(symbol)
+    await message.answer(f"Введи кількість {coin}, яку було продано:", reply_markup=cancel_kb())
+    await state.set_state(EditTransaction.waiting_coin_amount)
+
+
+@router.message(EditTransaction.waiting_usdt_amount)
+async def trade_edit_usdt_amount(message: Message, state: FSMContext):
     try:
-        price = float(parts[0])
-        usdt_amount = float(parts[1])
-        btc_amount = float(parts[2])
-        fee = float(parts[3])
-        fee_asset = parts[4].upper()
-        if price < 0 or usdt_amount < 0 or btc_amount < 0 or fee < 0:
-            raise ValueError
-        if fee_asset not in ("USDT", _base_coin(tx.get("symbol", settings_service.get_symbol()))):
+        usdt_amount = float(message.text.replace(",", "."))
+        if usdt_amount < 0:
             raise ValueError
     except ValueError:
-        await message.answer("❌ Перевір числа та валюту комісії.")
+        await message.answer("❌ Введи коректну суму USDT.")
         return
 
+    data = await state.get_data()
+    tx_id = data.get("edit_tx_id")
+    tx = get_transaction(tx_id)
+    if not tx or tx.get("status") != "ACTIVE":
+        await message.answer("❌ Транзакція не знайдена або вже не активна.")
+        await state.clear()
+        return
+
+    edit_kind = data.get("edit_kind")
+    if edit_kind == "BUY":
+        price = data.get("edit_price", 0.0)
+        symbol = tx.get("symbol", settings_service.get_symbol())
+        from bot.messages import _base_coin
+        coin = _base_coin(symbol)
+        fee, fee_asset = _auto_fee(usdt_amount / price if price > 0 else 0.0, coin)
+        btc_amount = max((usdt_amount / price if price > 0 else 0.0) - fee, 0.0)
+        await _update_transaction_and_rebuild(tx_id, price, usdt_amount, btc_amount, fee, fee_asset)
+        await message.answer(
+            "✅ Угоду змінено. Портфель повністю перераховано.\n"
+            f"Комісія: {_format_fee(fee, fee_asset)}",
+            reply_markup=main_menu(),
+        )
+        await state.clear()
+        return
+
+    await _update_transaction_and_rebuild(tx_id, 0.0, usdt_amount, 0.0, 0.0, "USDT")
+    await message.answer("✅ Угоду змінено. Портфель повністю перераховано.", reply_markup=main_menu())
+    await state.clear()
+
+
+@router.message(EditTransaction.waiting_coin_amount)
+async def trade_edit_coin_amount(message: Message, state: FSMContext):
+    try:
+        coin_amount = float(message.text.replace(",", "."))
+        if coin_amount < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введи коректну кількість монети.")
+        return
+
+    data = await state.get_data()
+    tx_id = data.get("edit_tx_id")
+    tx = get_transaction(tx_id)
+    if not tx or tx.get("status") != "ACTIVE":
+        await message.answer("❌ Транзакція не знайдена або вже не активна.")
+        await state.clear()
+        return
+
+    price = data.get("edit_price", 0.0)
+    usdt_amount = coin_amount * price
+    fee, fee_asset = _auto_fee(usdt_amount, "USDT")
+    await _update_transaction_and_rebuild(tx_id, price, usdt_amount, coin_amount, fee, fee_asset)
+    await message.answer(
+        "✅ Угоду змінено. Портфель повністю перераховано.\n"
+        f"Комісія: {_format_fee(fee, fee_asset)}",
+        reply_markup=main_menu(),
+    )
+    await state.clear()
+
+
+def _edit_transaction_kind(tx: dict) -> str:
+    tx_type = tx.get("type", "")
+    price = float(tx.get("price", 0.0) or 0.0)
+    btc_amount = float(tx.get("btc_amount", 0.0) or 0.0)
+    if tx_type in ("SELL", "MANUAL_SELL"):
+        return "SELL"
+    if tx_type in ("BUY", "MANUAL_BUY", "MONTHLY_DEPOSIT", "EXTRA_DEPOSIT") and price > 0 and btc_amount > 0:
+        return "BUY"
+    return "USDT_ONLY"
+
+
+async def _update_transaction_and_rebuild(
+    tx_id: int,
+    price: float,
+    usdt_amount: float,
+    btc_amount: float,
+    fee: float,
+    fee_asset: str,
+) -> None:
     update_transaction_values(tx_id, price, usdt_amount, btc_amount, fee, fee_asset)
     portfolio_service.rebuild_portfolio_from_transactions()
     buyback_service.sync_cycles_from_active_transactions()
@@ -610,9 +707,6 @@ async def trade_edit_values(message: Message, state: FSMContext):
         sheets_service.update_dashboard(metrics, settings)
     except Exception:
         pass
-
-    await message.answer("✅ Угоду змінено. Портфель повністю перераховано.", reply_markup=main_menu())
-    await state.clear()
 
 
 @router.callback_query(F.data.startswith("trade:delete_pick:"))
