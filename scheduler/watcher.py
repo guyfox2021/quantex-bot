@@ -41,10 +41,12 @@ async def run_watcher(bot: Bot):
             if updated:
                 signal_service.reset_buy_entry_triggers(strategy.name)
 
+            open_buybacks = buyback_service.get_open_cycles(strategy.name)
+            signal_service.refresh_ignored_signal_locks(strategy.name, price, portfolio, open_buybacks)
             triggers = signal_service.get_triggers(strategy.name)
             market_data = {
                 "price": price,
-                "open_buybacks": buyback_service.get_open_cycles(strategy.name),
+                "open_buybacks": open_buybacks,
             }
             signal = strategy.check(portfolio, market_data, settings, triggers)
 

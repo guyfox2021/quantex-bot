@@ -48,6 +48,7 @@ def _status_badge(status: str) -> str:
         "CONFIRMED": "✅ CONFIRMED",
         "REJECTED": "❌ REJECTED",
         "IGNORED": "🙈 IGNORED",
+        "EXPIRED": "⌛ EXPIRED",
     }.get(status, status)
 
 
@@ -136,6 +137,7 @@ def signal_message(signal, symbol: str = "BTCUSDT", price: float = 0.0, portfoli
         return (
             f"{title} | {coin}\n\n"
             f"{signal.reason}\n\n"
+            f"Ціна сигналу: {fmt_price(price)} USDT\n\n"
             f"Рекомендація:\n{signal.recommended_action}"
             f"\n\nПісля виконання введи фактичну ціну покупки."
         )
@@ -143,6 +145,7 @@ def signal_message(signal, symbol: str = "BTCUSDT", price: float = 0.0, portfoli
         return (
             f"{title} | {coin}\n\n"
             f"{signal.reason}\n\n"
+            f"Ціна сигналу: {fmt_price(price)} USDT\n\n"
             f"Рекомендація:\n{signal.recommended_action}"
             f"\n\nПісля виконання введи фактичну ціну продажу."
         )
@@ -195,6 +198,7 @@ def signal_line(sig: dict) -> str:
     status = sig.get("status", "")
     reason = sig.get("reason", "")
     recommended_action = sig.get("recommended_action", "")
+    price = fmt_price(sig.get("price", 0))
     strategy = get_strategy(strategy_name)
     return (
         f"🕒 {created}\n"
@@ -202,5 +206,6 @@ def signal_line(sig: dict) -> str:
         f"🧠 Стратегія: {strategy.title}\n"
         f"📌 Статус: {_status_badge(status)}\n\n"
         f"Причина:\n{reason}\n\n"
+        f"Ціна сигналу: {price} USDT\n\n"
         f"Рекомендація:\n{recommended_action}"
     )

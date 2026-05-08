@@ -288,11 +288,13 @@ async def _check_and_send_signal(message: Message, send_hold: bool = False, bot=
     portfolio = portfolio_service.get_portfolio()
     settings = settings_service.get_settings()
     strategy = get_strategy(settings.get("active_strategy", "accumulation"))
+    open_buybacks = buyback_service.get_open_cycles(strategy.name)
+    signal_service.refresh_ignored_signal_locks(strategy.name, price, portfolio, open_buybacks)
     triggers = signal_service.get_triggers(strategy.name)
 
     market_data = {
         "price": price,
-        "open_buybacks": buyback_service.get_open_cycles(strategy.name),
+        "open_buybacks": open_buybacks,
     }
     signal = strategy.check(portfolio, market_data, settings, triggers)
 
@@ -310,7 +312,7 @@ async def _check_and_send_signal(message: Message, send_hold: bool = False, bot=
             )
             if has_active:
                 if send_hold and message:
-                    await message.answer("ℹ️ Такий сигнал уже очікує підтвердження.")
+                    await message.answer("ℹ️ Такий сигнал уже був надісланий або пропущений на поточному рівні.")
                 return signal
 
         sig_id = signal_service.save_signal(signal, price, status="SENT")
@@ -1261,7 +1263,7 @@ async def signal_confirm_cb(callback: CallbackQuery, state: FSMContext):
 
     if action == "skip":
         signal_service.update_signal_status(signal_id, "IGNORED")
-        await callback.message.edit_text("❌ Сигнал проігноровано.")
+        await callback.message.edit_text("❌ Сигнал пропущено. Якщо ціна вийде з рівня і повернеться знову, бот надішле новий сигнал.")
         await callback.answer()
         return
 

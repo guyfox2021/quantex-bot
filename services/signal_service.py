@@ -88,12 +88,88 @@ def has_active_signal_for_trigger(strategy_name: str, trigger_type: str, level_p
                WHERE strategy_name = ?
                AND trigger_type = ?
                AND level_percent = ?
-               AND status IN ('NEW', 'SENT')
+               AND status IN ('NEW', 'SENT', 'IGNORED')
                AND (amount_usdt > 0 OR amount_btc_percent > 0)
                ORDER BY id DESC LIMIT 1""",
             (strategy_name, trigger_type, level_percent),
         ).fetchone()
         return row is not None
+
+
+def refresh_ignored_signal_locks(
+    strategy_name: str,
+    current_price: float,
+    portfolio: dict,
+    open_buybacks: list[dict] | None = None,
+) -> None:
+    """Unlock skipped signals after price leaves their trigger zone."""
+    if current_price <= 0:
+        return
+
+    open_buybacks = open_buybacks or []
+    cycles_by_id = {int(c.get("id")): c for c in open_buybacks if c.get("id") is not None}
+    avg_price = float(portfolio.get("avg_price", 0) or 0)
+    last_high = float(portfolio.get("last_high", 0) or 0)
+    to_expire: list[dict] = []
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT * FROM signals
+               WHERE strategy_name = ?
+               AND status = 'IGNORED'
+               AND trigger_type IS NOT NULL
+               ORDER BY id ASC""",
+            (strategy_name,),
+        ).fetchall()
+
+    for row in rows:
+        sig = dict(row)
+        trigger_type = sig.get("trigger_type")
+        level = float(sig.get("level_percent") or 0)
+        should_expire = False
+
+        if trigger_type == "BUYBACK":
+            cycle = cycles_by_id.get(int(sig.get("buyback_cycle_id") or 0))
+            sell_price = float((cycle or {}).get("sell_price", 0) or 0)
+            if not cycle or sell_price <= 0:
+                should_expire = True
+            else:
+                drop = (sell_price - current_price) / sell_price * 100
+                should_expire = drop < level
+        elif trigger_type in ("BUY_DIP", "BUY_DROP"):
+            if last_high <= 0:
+                should_expire = True
+            else:
+                drawdown = (last_high - current_price) / last_high * 100
+                should_expire = drawdown < level
+        elif trigger_type == "SELL_PROFIT":
+            if avg_price <= 0:
+                should_expire = True
+            else:
+                profit = (current_price - avg_price) / avg_price * 100
+                should_expire = profit < level
+
+        if should_expire:
+            to_expire.append(sig)
+
+    if not to_expire:
+        return
+
+    now = _now()
+    with get_connection() as conn:
+        for sig in to_expire:
+            conn.execute(
+                "UPDATE signals SET status = 'EXPIRED', updated_at = ? WHERE id = ?",
+                (now, sig["id"]),
+            )
+            if sig.get("trigger_type") != "BUYBACK":
+                conn.execute(
+                    """UPDATE strategy_triggers
+                       SET is_triggered = 0, triggered_at = NULL
+                       WHERE strategy_name = ? AND trigger_type = ? AND level_percent = ?""",
+                    (strategy_name, sig.get("trigger_type"), sig.get("level_percent")),
+                )
+        conn.commit()
 
 
 def ensure_default_triggers(strategy) -> None:
