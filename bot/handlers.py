@@ -5,6 +5,7 @@ from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 
+import config
 from bot.states import (
     InitPortfolio, ManualBuy, ManualSell,
     MonthlyDeposit, ExtraDeposit, EditTransaction, SettingsStates, SignalConfirm,
@@ -13,7 +14,7 @@ from bot.keyboards import (
     main_menu, buy_confirm_kb, sell_confirm_kb, signal_confirm_kb,
     monthly_deposit_kb, trades_kb, signals_kb, refresh_back_kb,
     strategy_kb, strategy_select_kb, settings_kb, history_kb, back_kb, cancel_kb, start_strategy_kb,
-    confirm_delete_trade_kb, transaction_delete_select_kb, transaction_edit_select_kb,
+    confirm_delete_trade_kb, transaction_delete_select_kb, transaction_edit_select_kb, dashboard_link_kb,
 )
 from bot.messages import (
     start_message, balance_message, pnl_message, strategy_message,
@@ -333,6 +334,23 @@ async def _check_and_send_signal(message: Message, send_hold: bool = False, bot=
 
 # ─── 📊 Баланс ────────────────────────────────────────────────────────────────
 
+@router.message(F.text == "🌐 Дашборд")
+async def btn_dashboard(message: Message):
+    if not owner_service.is_owner(message.from_user.id):
+        await message.answer(ACCESS_DENIED)
+        return
+
+    url = _dashboard_url()
+    if not url:
+        await message.answer("❌ Посилання на дашборд ще не налаштовано.")
+        return
+
+    await message.answer(
+        "🌐 Дашборд QuantEX\n\nГрафіки портфеля, PnL, резерву, сигналів та BUYBACK cycles.",
+        reply_markup=dashboard_link_kb(url),
+    )
+
+
 @router.message(F.text == "📊 Баланс")
 async def btn_balance(message: Message):
     if not owner_service.is_owner(message.from_user.id):
@@ -532,6 +550,14 @@ async def trade_edit_select(callback: CallbackQuery):
         reply_markup=transaction_edit_select_kb(transactions),
     )
     await callback.answer()
+
+
+def _dashboard_url() -> str:
+    if config.DASHBOARD_PUBLIC_URL:
+        return config.DASHBOARD_PUBLIC_URL
+    if config.DASHBOARD_TOKEN:
+        return f"http://167.71.63.195:{config.DASHBOARD_PORT}/dashboard?token={config.DASHBOARD_TOKEN}"
+    return ""
 
 
 @router.callback_query(F.data == "trade:edit_cancel")

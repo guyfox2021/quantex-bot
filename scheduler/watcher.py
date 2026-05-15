@@ -4,7 +4,15 @@ import logging
 from aiogram import Bot
 
 import config
-from services import binance_service, portfolio_service, settings_service, signal_service, sheets_service, buyback_service
+from services import (
+    binance_service,
+    portfolio_service,
+    settings_service,
+    signal_service,
+    sheets_service,
+    buyback_service,
+    snapshot_service,
+)
 from strategies.registry import get_strategy
 from bot.messages import signal_message
 from bot.keyboards import signal_confirm_kb
@@ -89,6 +97,7 @@ async def run_watcher(bot: Bot):
                 now = datetime.now(timezone.utc).isoformat()
                 metrics = portfolio_service.calculate_portfolio_metrics(price)
                 sheets_service.update_dashboard(metrics, settings)
+                snapshot_service.save_snapshot(metrics, settings, min_interval_minutes=60)
             except Exception as e:
                 logger.error(f"Watcher: sheets update error: {e}")
 

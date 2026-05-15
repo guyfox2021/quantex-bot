@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>QuantEX Dashboard</title>
+  <link rel="stylesheet" href="/static/dashboard/dashboard.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js" defer></script>
+  <script src="/static/dashboard/dashboard.js" defer></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">QuantEX</p>
+        <h1>Дашборд портфеля</h1>
+      </div>
+      <div class="status-pill" id="systemStatus">Оновлення...</div>
+    </header>
+
+    <section class="hero">
+      <div>
+        <p class="label">Вартість портфеля</p>
+        <div class="hero-value" id="portfolioValue">...</div>
+        <p class="muted" id="portfolioMeta">BTCUSDT</p>
+      </div>
+      <div class="progress-wrap">
+        <div class="ring" style="--progress: 0">
+          <span id="progressPercent">0%</span>
+        </div>
+        <p>Прогрес до цілі</p>
+        <strong id="progressText">...</strong>
+      </div>
+    </section>
+
+    <section class="quick-grid">
+      <article class="metric">
+        <span>Загальний PnL</span>
+        <strong id="totalPnl">...</strong>
+        <small id="totalPnlPercent">...</small>
+      </article>
+      <article class="metric">
+        <span>USDT резерв</span>
+        <strong id="usdtReserve">...</strong>
+        <small>Доступно для покупок</small>
+      </article>
+      <article class="metric">
+        <span>BTC у портфелі</span>
+        <strong id="btcAmount">...</strong>
+        <small id="btcValue">...</small>
+      </article>
+      <article class="metric">
+        <span>Поточна ціна BTC</span>
+        <strong id="currentPrice">...</strong>
+        <small id="avgPrice">...</small>
+      </article>
+    </section>
+
+    <section class="decision" id="decisionBox">
+      <p class="label">Поточна дія</p>
+      <h2 id="decisionTitle">Завантаження...</h2>
+      <p id="decisionText">Оновлюю останній сигнал і стан стратегії.</p>
+    </section>
+
+    <section class="charts">
+      <article class="panel wide">
+        <div class="panel-head">
+          <h2>Динаміка портфеля</h2>
+          <span>Вартість / внесено / ціль</span>
+        </div>
+        <div class="chart-box"><canvas id="portfolioChart"></canvas></div>
+      </article>
+      <article class="panel">
+        <div class="panel-head">
+          <h2>Структура портфеля</h2>
+          <span>BTC / USDT</span>
+        </div>
+        <div class="chart-box small allocation-box">
+          <canvas id="allocationChart"></canvas>
+        </div>
+        <div class="allocation-summary">
+          <span><i class="dot btc-dot"></i>BTC: <strong id="btcShareText">...</strong></span>
+          <span><i class="dot reserve-dot"></i>USDT резерв: <strong id="reserveShareText">...</strong></span>
+        </div>
+      </article>
+      <article class="panel">
+        <div class="panel-head">
+          <h2>Прибуток / збиток</h2>
+          <span>Загальний, реалізований, нереалізований</span>
+        </div>
+        <div class="chart-box"><canvas id="pnlChart"></canvas></div>
+      </article>
+      <article class="panel">
+        <div class="panel-head">
+          <h2>Ціна BTC</h2>
+          <span>Поточна проти середньої</span>
+        </div>
+        <div class="chart-box"><canvas id="priceChart"></canvas></div>
+      </article>
+      <article class="panel">
+        <div class="panel-head">
+          <h2>Рух резерву</h2>
+          <span>USDT, доступні для стратегії</span>
+        </div>
+        <div class="chart-box"><canvas id="reserveChart"></canvas></div>
+      </article>
+    </section>
+
+    <section class="split">
+      <article class="panel">
+        <div class="panel-head">
+          <h2>Відкриті BUYBACK цикли</h2>
+          <span id="cycleCount">...</span>
+        </div>
+        <div class="list" id="cyclesList"></div>
+      </article>
+      <article class="panel">
+        <div class="panel-head">
+          <h2>Стан стратегії</h2>
+          <span id="strategyName">...</span>
+        </div>
+        <div class="state-grid" id="strategyState"></div>
+      </article>
+    </section>
+
+    <section class="split">
+      <article class="panel">
+        <div class="panel-head">
+          <h2>Останні сигнали</h2>
+          <span>історія</span>
+        </div>
+        <div class="list" id="signalsList"></div>
+      </article>
+      <article class="panel">
+        <div class="panel-head">
+          <h2>Останні угоди</h2>
+          <span>портфель</span>
+        </div>
+        <div class="list" id="transactionsList"></div>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

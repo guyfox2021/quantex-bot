@@ -1,4 +1,20 @@
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+import config
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+
+
+def _dashboard_url() -> str:
+    if config.DASHBOARD_PUBLIC_URL:
+        return config.DASHBOARD_PUBLIC_URL
+    if config.DASHBOARD_TOKEN:
+        return f"http://167.71.63.195:{config.DASHBOARD_PORT}/dashboard?token={config.DASHBOARD_TOKEN}"
+    return ""
+
+
+def _dashboard_button() -> KeyboardButton:
+    url = _dashboard_url()
+    if url.startswith("https://"):
+        return KeyboardButton(text="🌐 Дашборд", web_app=WebAppInfo(url=url))
+    return KeyboardButton(text="🌐 Дашборд")
 
 
 def main_menu() -> ReplyKeyboardMarkup:
@@ -7,7 +23,7 @@ def main_menu() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="📊 Баланс"), KeyboardButton(text="📈 PnL")],
             [KeyboardButton(text="🧠 Стратегія"), KeyboardButton(text="💰 Угоди")],
             [KeyboardButton(text="🔔 Сигнали"), KeyboardButton(text="📜 Історія")],
-            [KeyboardButton(text="⚙️ Налаштування")],
+            [_dashboard_button(), KeyboardButton(text="⚙️ Налаштування")],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -155,6 +171,12 @@ def history_kb() -> InlineKeyboardMarkup:
 def back_kb(cb: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔙 Назад", callback_data=cb)]
+    ])
+
+
+def dashboard_link_kb(url: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌐 Відкрити дашборд", url=url)]
     ])
 
 
