@@ -103,7 +103,7 @@ async def cmd_start(message: Message, state: FSMContext):
             f"Активна стратегія: 🟣 {strategy.title}\n"
             f"Активна монета: {coin} ({symbol})\n\n"
             f"━━━━━━━━━━━━━━━━\n"
-            f"📍 ПЕРШИЙ СИГНАЛ: Встановити початкову позицію\n\n"
+            f"📍 ПЕРШЙ СГНАЛ: Встановити початкову позицію\n\n"
             f"Для запуску стратегії потрібна стартова покупка {coin}.\n"
             f"Вона стане точкою відліку — від неї рахуватиметься\n"
             f"просадка для докупівель і прибуток для продажів.",
@@ -1289,13 +1289,20 @@ async def signal_confirm_cb(callback: CallbackQuery, state: FSMContext):
 
     if action == "skip":
         signal_service.update_signal_status(signal_id, "IGNORED")
-        await callback.message.edit_text("❌ Сигнал пропущено. Якщо ціна вийде з рівня і повернеться знову, бот надішле новий сигнал.")
+        await callback.message.edit_text(
+            "\u274c \u0421\u0438\u0433\u043d\u0430\u043b \u043f\u0440\u043e\u043f\u0443\u0449\u0435\u043d\u043e. "
+            "\u042f\u043a\u0449\u043e \u0446\u0456\u043d\u0430 \u0432\u0438\u0439\u0434\u0435 \u0437 \u0440\u0456\u0432\u043d\u044f \u0456 \u043f\u043e\u0432\u0435\u0440\u043d\u0435\u0442\u044c\u0441\u044f \u0437\u043d\u043e\u0432\u0443, \u0431\u043e\u0442 \u043d\u0430\u0434\u0456\u0448\u043b\u0435 \u043d\u043e\u0432\u0438\u0439 \u0441\u0438\u0433\u043d\u0430\u043b. "
+            "\u042f\u043a\u0449\u043e \u0446\u0456\u043d\u0430 \u0437\u0430\u043b\u0438\u0448\u0438\u0442\u044c\u0441\u044f \u0432 \u0446\u0456\u0439 \u0437\u043e\u043d\u0456, \u0431\u043e\u0442 \u043d\u0430\u0433\u0430\u0434\u0430\u0454 \u043f\u043e\u0432\u0442\u043e\u0440\u043d\u043e \u043f\u0440\u0438\u0431\u043b\u0438\u0437\u043d\u043e \u0447\u0435\u0440\u0435\u0437 15 \u0445\u0432\u0438\u043b\u0438\u043d."
+        )
         await callback.answer()
         return
 
     if action in ("custom", "market"):
         await state.update_data(signal_id=signal_id, signal_type=signal_type)
-        await callback.message.answer("Введи фактичну ціну виконання у USDT:", reply_markup=cancel_kb())
+        await callback.message.answer(
+            "\u0412\u0432\u0435\u0434\u0438 \u0444\u0430\u043a\u0442\u0438\u0447\u043d\u0443 \u0446\u0456\u043d\u0443 \u0432\u0438\u043a\u043e\u043d\u0430\u043d\u043d\u044f \u0443 USDT:",
+            reply_markup=cancel_kb(),
+        )
         await state.set_state(SignalConfirm.waiting_custom_price)
         await callback.answer()
         return
@@ -1309,23 +1316,58 @@ async def signal_confirm_custom_price(message: Message, state: FSMContext):
         if price <= 0:
             raise ValueError
     except ValueError:
-        await message.answer("❌ Введи коректну ціну у USDT.")
+        await message.answer("\u274c \u0412\u0432\u0435\u0434\u0438 \u043a\u043e\u0440\u0435\u043a\u0442\u043d\u0443 \u0446\u0456\u043d\u0443 \u0443 USDT.")
         return
+
     data = await state.get_data()
     symbol = settings_service.get_symbol()
     from bot.messages import _base_coin
     coin = _base_coin(symbol)
+    await state.update_data(execution_price=price)
+
     if data["signal_type"] == "BUY":
-        sig_data = signal_service.get_signal(data["signal_id"]) or {}
-        amount_usdt = sig_data.get("amount_usdt", 0.0)
-        fee, fee_asset = _auto_fee(amount_usdt / price if price > 0 else 0.0, coin)
+        await message.answer(f"\u0412\u0432\u0435\u0434\u0438 \u0444\u0430\u043a\u0442\u0438\u0447\u043d\u043e \u043a\u0443\u043f\u043b\u0435\u043d\u0443 \u043a\u0456\u043b\u044c\u043a\u0456\u0441\u0442\u044c {coin}:", reply_markup=cancel_kb())
     else:
-        sig_data = signal_service.get_signal(data["signal_id"]) or {}
-        pct = sig_data.get("amount_btc_percent", 0.0)
-        portfolio = portfolio_service.get_portfolio()
-        btc_to_sell = portfolio.get("btc_amount", 0.0) * pct / 100
-        fee, fee_asset = _auto_fee(btc_to_sell * price, "USDT")
-    await _execute_signal_action(message, state, data["signal_id"], data["signal_type"], price, fee, fee_asset)
+        await message.answer(f"\u0412\u0432\u0435\u0434\u0438 \u0444\u0430\u043a\u0442\u0438\u0447\u043d\u043e \u043f\u0440\u043e\u0434\u0430\u043d\u0443 \u043a\u0456\u043b\u044c\u043a\u0456\u0441\u0442\u044c {coin}:", reply_markup=cancel_kb())
+    await state.set_state(SignalConfirm.waiting_coin_amount)
+
+
+@router.message(SignalConfirm.waiting_coin_amount)
+async def signal_confirm_coin_amount(message: Message, state: FSMContext):
+    try:
+        actual_coin_amount = float(message.text.replace(",", "."))
+        if actual_coin_amount <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("\u274c \u0412\u0432\u0435\u0434\u0438 \u043a\u043e\u0440\u0435\u043a\u0442\u043d\u0443 \u043a\u0456\u043b\u044c\u043a\u0456\u0441\u0442\u044c \u043c\u043e\u043d\u0435\u0442\u0438.")
+        return
+
+    data = await state.get_data()
+    price = float(data.get("execution_price", 0.0) or 0.0)
+    if price <= 0:
+        await message.answer("\u274c \u041d\u0435 \u0432\u0434\u0430\u043b\u043e\u0441\u044f \u043e\u0442\u0440\u0438\u043c\u0430\u0442\u0438 \u0446\u0456\u043d\u0443 \u0432\u0438\u043a\u043e\u043d\u0430\u043d\u043d\u044f. \u0421\u043f\u0440\u043e\u0431\u0443\u0439 \u0449\u0435 \u0440\u0430\u0437.")
+        await state.clear()
+        return
+
+    symbol = settings_service.get_symbol()
+    from bot.messages import _base_coin
+    coin = _base_coin(symbol)
+
+    if data["signal_type"] == "BUY":
+        fee, fee_asset = _auto_fee(actual_coin_amount, coin)
+    else:
+        fee, fee_asset = _auto_fee(actual_coin_amount * price, "USDT")
+
+    await _execute_signal_action(
+        message,
+        state,
+        data["signal_id"],
+        data["signal_type"],
+        price,
+        fee,
+        fee_asset,
+        actual_coin_amount=actual_coin_amount,
+    )
 
 
 async def _execute_signal_action(
@@ -1336,10 +1378,11 @@ async def _execute_signal_action(
     price: float,
     fee: float = 0.0,
     fee_asset: str = "USDT",
+    actual_coin_amount: float | None = None,
 ):
     sig_data = signal_service.get_signal(signal_id)
     if not sig_data:
-        await msg.answer("❌ Сигнал не знайдено.")
+        await msg.answer("\u274c \u0421\u0438\u0433\u043d\u0430\u043b \u043d\u0435 \u0437\u043d\u0430\u0439\u0434\u0435\u043d\u043e.")
         await state.clear()
         return
 
@@ -1348,51 +1391,51 @@ async def _execute_signal_action(
     coin = _base_coin(symbol)
 
     if signal_type == "BUY":
-        amount_usdt = sig_data.get("amount_usdt", 0)
+        gross_btc_bought = actual_coin_amount if actual_coin_amount is not None else 0.0
+        amount_usdt = gross_btc_bought * price
+        net_btc_bought = max(gross_btc_bought - fee, 0.0) if fee_asset == coin else gross_btc_bought
         try:
             portfolio_service.apply_buy(
                 amount_usdt,
                 price,
                 "BUY",
-                f"Покупка за сигналом #{signal_id}",
+                f"\u041f\u043e\u043a\u0443\u043f\u043a\u0430 \u0437\u0430 \u0441\u0438\u0433\u043d\u0430\u043b\u043e\u043c #{signal_id}",
                 spend_from_reserve=True,
                 fee=fee,
                 fee_asset=fee_asset,
             )
         except ValueError as e:
-            await msg.answer(f"❌ {e}")
+            await msg.answer(f"\u274c {e}")
             await state.clear()
             return
         if sig_data.get("trigger_type") == "BUYBACK" and sig_data.get("buyback_cycle_id"):
-            btc_bought = amount_usdt / price if price > 0 else 0
-            if fee_asset == coin:
-                btc_bought = max(btc_bought - fee, 0.0)
             buyback_service.mark_level_done(
                 sig_data["buyback_cycle_id"],
                 sig_data.get("level_percent", 0),
-                btc_bought,
+                net_btc_bought,
             )
         signal_service.update_signal_status(signal_id, "CONFIRMED")
-        await msg.answer(f"✅ Куплено {coin} на {amount_usdt:.2f} USDT за ціною {price:,.2f}\nКомісія: {fee:g} {fee_asset}")
+        await msg.answer(
+            f"\u2705 \u041a\u0443\u043f\u043b\u0435\u043d\u043e {gross_btc_bought:.8f} {coin}\n"
+            f"\u0412\u0438\u0442\u0440\u0430\u0447\u0435\u043d\u043e: {amount_usdt:.2f} USDT\n"
+            f"\u0426\u0456\u043d\u0430: {price:,.2f}\n"
+            f"\u041a\u043e\u043c\u0456\u0441\u0456\u044f: {fee:g} {fee_asset}"
+        )
     elif signal_type == "SELL":
-        pct = sig_data.get("amount_btc_percent", 0)
-        portfolio_before = portfolio_service.get_portfolio()
-        gross_btc_sold = portfolio_before.get("btc_amount", 0.0) * pct / 100
-        btc_sold = gross_btc_sold
-        if fee_asset == coin:
-            btc_sold += fee
+        gross_btc_sold = actual_coin_amount if actual_coin_amount is not None else 0.0
+        btc_sold = gross_btc_sold + (fee if fee_asset == coin else 0.0)
         usdt_received = gross_btc_sold * price - (fee if fee_asset == "USDT" else 0.0)
         try:
-            portfolio_service.apply_sell(
-                pct,
+            portfolio_service.apply_sell_amount(
+                gross_btc_sold,
                 price,
                 "SELL",
-                f"Продаж за сигналом #{signal_id}",
+                f"\u041f\u0440\u043e\u0434\u0430\u0436 \u0437\u0430 \u0441\u0438\u0433\u043d\u0430\u043b\u043e\u043c #{signal_id}",
                 fee=fee,
                 fee_asset=fee_asset,
             )
         except ValueError as e:
-            await msg.answer(f"❌ {e}")
+            await msg.answer(f"\u274c {e}")
             await state.clear()
             return
         if sig_data.get("strategy_name") == "accumulation_v2" and sig_data.get("trigger_type") == "SELL_PROFIT":
@@ -1404,15 +1447,18 @@ async def _execute_signal_action(
                 strategy_name="accumulation_v2",
             )
         signal_service.update_signal_status(signal_id, "CONFIRMED")
-        await msg.answer(f"✅ Продано {pct:.2f}% {coin} за ціною {price:,.2f}\nКомісія: {fee:g} {fee_asset}")
+        await msg.answer(
+            f"\u2705 \u041f\u0440\u043e\u0434\u0430\u043d\u043e {gross_btc_sold:.8f} {coin}\n"
+            f"\u041e\u0442\u0440\u0438\u043c\u0430\u043d\u043e: {usdt_received:.2f} USDT\n"
+            f"\u0426\u0456\u043d\u0430: {price:,.2f}\n"
+            f"\u041a\u043e\u043c\u0456\u0441\u0456\u044f: {fee:g} {fee_asset}"
+        )
 
     settings = settings_service.get_settings()
     metrics = portfolio_service.calculate_portfolio_metrics(price)
     sheets_service.update_dashboard(metrics, settings)
     await state.clear()
 
-
-# ─── 🔔 Сигнали ───────────────────────────────────────────────────────────────
 
 @router.message(F.text == "🔔 Сигнали")
 async def btn_signals(message: Message):
@@ -1759,3 +1805,15 @@ async def settings_symbol_value(message: Message, state: FSMContext):
 async def settings_back(callback: CallbackQuery):
     await callback.message.delete()
     await callback.answer()
+
+
+@router.message()
+async def fallback_owner_message(message: Message):
+    if not owner_service.is_owner(message.from_user.id):
+        await message.answer(ACCESS_DENIED)
+        return
+    await message.answer(
+        "   .        /menu.",
+        reply_markup=main_menu(),
+    )
+

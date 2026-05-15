@@ -85,7 +85,7 @@ async def build_dashboard_payload() -> dict:
     snapshots = snapshot_service.get_snapshots(160)
 
     latest_signal = signals[0] if signals else None
-    last_buy_time = signal_service.get_last_buy_signal_time()
+    last_buy_time = signal_service.get_last_confirmed_buy_time()
     buy_cooldown_active = bool(
         last_buy_time and (datetime.now(timezone.utc) - last_buy_time).total_seconds() < 6 * 3600
     )

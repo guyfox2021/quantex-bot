@@ -57,25 +57,29 @@ def get_signal(signal_id: int) -> dict | None:
         return dict(row) if row else None
 
 
-def get_last_buy_signal_time() -> datetime | None:
-    with get_connection() as conn:
-        row = conn.execute(
-            """SELECT created_at FROM signals
-               WHERE signal_type = 'BUY'
-               AND status IN ('NEW', 'SENT', 'CONFIRMED')
-               ORDER BY created_at DESC LIMIT 1"""
-        ).fetchone()
-    if not row or not row["created_at"]:
+def _parse_dt(value: str | None) -> datetime | None:
+    if not value:
         return None
     try:
-        dt = datetime.fromisoformat(row["created_at"])
+        dt = datetime.fromisoformat(value)
     except ValueError:
         return None
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def get_last_confirmed_buy_time() -> datetime | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            """SELECT created_at FROM signals
+               WHERE signal_type = 'BUY'
+               AND status = 'CONFIRMED'
+               ORDER BY created_at DESC LIMIT 1"""
+        ).fetchone()
+    return _parse_dt(row["created_at"]) if row and row["created_at"] else None
+
+
 def can_send_buy_signal(cooldown_hours: int = 6) -> bool:
-    last_buy_time = get_last_buy_signal_time()
+    last_buy_time = get_last_confirmed_buy_time()
     if not last_buy_time:
         return True
     return datetime.now(timezone.utc) - last_buy_time >= timedelta(hours=cooldown_hours)
@@ -101,8 +105,9 @@ def refresh_ignored_signal_locks(
     current_price: float,
     portfolio: dict,
     open_buybacks: list[dict] | None = None,
+    retry_after_minutes: int = 15,
 ) -> None:
-    """Unlock skipped signals after price leaves their trigger zone."""
+    """Unlock skipped signals after price leaves their trigger zone or after a retry delay."""
     if current_price <= 0:
         return
 
@@ -126,6 +131,7 @@ def refresh_ignored_signal_locks(
         sig = dict(row)
         trigger_type = sig.get("trigger_type")
         level = float(sig.get("level_percent") or 0)
+        created_at = _parse_dt(sig.get("created_at"))
         should_expire = False
 
         if trigger_type == "BUYBACK":
@@ -148,6 +154,14 @@ def refresh_ignored_signal_locks(
             else:
                 profit = (current_price - avg_price) / avg_price * 100
                 should_expire = profit < level
+
+        if (
+            not should_expire
+            and sig.get("signal_type") == "BUY"
+            and created_at
+            and datetime.now(timezone.utc) - created_at >= timedelta(minutes=retry_after_minutes)
+        ):
+            should_expire = True
 
         if should_expire:
             to_expire.append(sig)

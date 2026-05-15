@@ -42,3 +42,4 @@ class SettingsStates(StatesGroup):
 
 class SignalConfirm(StatesGroup):
     waiting_custom_price = State()
+    waiting_coin_amount = State()

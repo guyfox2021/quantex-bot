@@ -216,6 +216,70 @@ def apply_sell(
     return get_portfolio()
 
 
+def apply_sell_amount(
+    btc_to_sell: float,
+    price: float,
+    tx_type: str,
+    note: str = "",
+    fee: float = 0.0,
+    fee_asset: str = "USDT",
+) -> dict:
+    symbol = get_symbol()
+    coin = _base_coin(symbol)
+    fee_asset = (fee_asset or "USDT").upper()
+    portfolio = get_portfolio()
+    if not portfolio:
+        return {}
+
+    btc_amount = portfolio.get("btc_amount", 0.0)
+    total_btc_cost = portfolio.get("total_btc_cost", 0.0)
+    realized_pnl = portfolio.get("realized_pnl", 0.0)
+    usdt_reserve = portfolio.get("usdt_reserve", 0.0)
+
+    usdt_received = btc_to_sell * price
+    usdt_fee = fee if fee_asset == "USDT" else 0.0
+    btc_fee = fee if fee_asset == coin else 0.0
+    if usdt_fee > usdt_received:
+        raise ValueError("Комісія не може бути більшою за суму продажу.")
+    total_btc_removed = btc_to_sell + btc_fee
+    if total_btc_removed > btc_amount:
+        raise ValueError(f"Недостатньо {coin} для продажу.")
+
+    cost_removed = total_btc_cost * (total_btc_removed / btc_amount) if btc_amount > 0 else 0.0
+    realized_pnl_add = usdt_received - usdt_fee - cost_removed
+
+    btc_amount_new = btc_amount - total_btc_removed
+    usdt_reserve_new = usdt_reserve + usdt_received - usdt_fee
+    total_btc_cost_new = total_btc_cost - cost_removed
+    realized_pnl_new = realized_pnl + realized_pnl_add
+    avg_price_new = total_btc_cost_new / btc_amount_new if btc_amount_new > 0 else 0.0
+
+    with get_connection() as conn:
+        conn.execute(
+            """UPDATE portfolio SET
+               btc_amount = ?,
+               usdt_reserve = ?,
+               total_btc_cost = ?,
+               avg_price = ?,
+               realized_pnl = ?,
+               updated_at = ?
+               WHERE id = ?""",
+            (
+                btc_amount_new,
+                usdt_reserve_new,
+                total_btc_cost_new,
+                avg_price_new,
+                realized_pnl_new,
+                _now(),
+                portfolio["id"],
+            ),
+        )
+        conn.commit()
+
+    add_transaction(tx_type, price, usdt_received, total_btc_removed, fee=fee, fee_asset=fee_asset, note=note, symbol=symbol)
+    return get_portfolio()
+
+
 def add_reserve(usdt_amount: float, tx_type: str, note: str = "") -> dict:
     symbol = get_symbol()
     portfolio = get_portfolio()
